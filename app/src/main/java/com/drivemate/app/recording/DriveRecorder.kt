@@ -24,6 +24,10 @@ import android.os.SystemClock
 import android.util.Log
 
 class DriveRecorder : Service() {
+    private lateinit var extra: com.drivemate.app.PleosSignals
+    private val coach = com.drivemate.app.CoachEngine()
+    private lateinit var voice: com.drivemate.app.CoachVoice
+    private var lastExtraLog = 0L
     private val handler = Handler(Looper.getMainLooper())
     private val storage by lazy { getSharedPreferences("driving", MODE_PRIVATE) }
     private var car: Car? = null
@@ -38,6 +42,10 @@ class DriveRecorder : Service() {
     private lateinit var locations: LocationManager
     private var route = JSONArray()
     private val locationListener = LocationListener { point ->
+        if (android.os.SystemClock.elapsedRealtimeNanos() - point.elapsedRealtimeNanos in 0..15000000000L && point.hasAccuracy() && point.accuracy <= 50f) {
+            storage.edit().putString("liveLat", point.latitude.toString()).putString("liveLon", point.longitude.toString())
+                .putFloat("bearing", if (point.hasBearing()) point.bearing else 0f).putLong("locationAt", SystemClock.elapsedRealtime()).apply()
+        }
         if (recording && point.hasAccuracy() && point.accuracy <= 50f && route.length() < 3600) {
             route.put(JSONArray().put(point.latitude).put(point.longitude))
         }
@@ -52,6 +60,8 @@ class DriveRecorder : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        extra = com.drivemate.app.PleosSignals(this); extra.start()
+        voice = com.drivemate.app.CoachVoice(this); voice.start()
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("driving", "주행 기록", NotificationManager.IMPORTANCE_LOW))
         val notification = Notification.Builder(this, "driving")
@@ -72,7 +82,7 @@ class DriveRecorder : Service() {
         locations = getSystemService(LocationManager::class.java)
         if (canLocate) {
             runCatching {
-                locations.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 2f, locationListener)
+                locations.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
             }.onFailure { Log.w("DriveMate", "위치 수신 시작 실패", it) }
         }
         recording = storage.getBoolean("recording", false)
@@ -86,7 +96,11 @@ class DriveRecorder : Service() {
         handler.post(poll)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if(intent?.action == "VOICE_CHECK") voice.speak("드라이브 메이트가 함께할게요.")
+        if(intent?.action == "VOICE_STOP") voice.stop()
+        return START_STICKY
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun publish(value: String) {
@@ -97,6 +111,8 @@ class DriveRecorder : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        if (::extra.isInitialized) extra.close()
+        if (::voice.isInitialized) voice.close()
         publish("unknown")
         if (::locations.isInitialized) locations.removeUpdates(locationListener)
         car?.disconnect()
@@ -114,10 +130,31 @@ class DriveRecorder : Service() {
         }.getOrNull()
         if (speed == null || gear == null || restricted == null) {
             previousSpeed = null
+            coach.reset()
+            storage.edit().remove("liveSpeed").apply()
             smoothSince = 0
             publish("unknown")
             return
         }
+        val nowTick = SystemClock.elapsedRealtime()
+        val steering = extra.angle
+        val brake = extra.brake
+        val turn = extra.turn
+        val editor = storage.edit().putFloat("liveSpeed",speed).putLong("signalAt",nowTick)
+            .putString("gearLabel",when(gear){VehicleGear.GEAR_PARK -> "P";VehicleGear.GEAR_DRIVE -> "D";VehicleGear.GEAR_REVERSE -> "R";else -> "N"})
+            .putString("brakeLabel",brake?.let{if(it) "작동" else "해제"}?:"미수신")
+            .putString("turnLabel",turn?:"미수신").putLong("extraAt",nowTick)
+        if(steering != null) editor.putFloat("steering",steering) else editor.remove("steering")
+        editor.apply()
+        if(nowTick-lastExtraLog>10000){android.util.Log.i("DriveMateSignals","live brake=$brake turn=$turn angle=$steering speed=$speed");lastExtraLog=nowTick}
+        if(gear == VehicleGear.GEAR_DRIVE && speed >= 0) {
+            val limit = storage.getInt("speedLimit",0).takeIf { it > 0 && nowTick-storage.getLong("limitAt",0) in 0..10000 }
+            coach.sample(nowTick,speed,brake,steering,limit,turn)?.let { advice ->
+                storage.edit().putString("coachTitle",advice.title).putString("coachDetail",advice.detail).putString("coachKind",advice.kind).putLong("coachAt",nowTick).apply()
+                android.util.Log.i("DriveMateCoach",advice.kind+": "+advice.title)
+                voice.speak(advice.title)
+            }
+        } else coach.reset()
         val parked = gear == VehicleGear.GEAR_PARK && kotlin.math.abs(speed) < 0.05f && !restricted
         if (!parked) {
             if (gear == VehicleGear.GEAR_DRIVE && speed > 0.05f && !recording) {
