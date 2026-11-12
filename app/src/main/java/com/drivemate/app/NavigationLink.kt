@@ -33,13 +33,15 @@ class NavigationLink(context: Context) {
         }
         override fun onTBTInfo(tbtInfoList: List<TBTInfo>) {
             val next = tbtInfoList.firstOrNull() ?: return
-            prefs.edit().putString("navInstruction",next.description).putFloat("turnDistance",next.distance.toFloat()).apply()
+            val then = tbtInfoList.getOrNull(1)
+            prefs.edit().putString("navInstruction",next.description).putFloat("turnDistance",next.distance.toFloat()).putLong("tbtAt",android.os.SystemClock.elapsedRealtime())
+                .apply { if (then != null) putString("thenInstruction",then.description).putFloat("thenDistance",then.distance.toFloat()) else remove("thenInstruction") }.apply()
         }
         override fun onRoutingCompleted() { prefs.edit().putString("navStatus","Pleos 경로 안내 연결됨").apply(); refresh() }
         override fun onRouteStarted(routeStartInfo: RouteStartInfo) { refresh() }
         override fun onDestinationChanged() { refresh() }
         override fun onRouteCancelled() { prefs.edit().putString("navStatus","Pleos 안내 종료").remove("navInstruction").remove("speedLimit").apply() }
-        override fun onDestinationArrived(destinationArrivedInfo: DestinationArrivedInfo) { prefs.edit().putString("navStatus","목적지에 도착했어요").apply() }
+        override fun onDestinationArrived(destinationArrivedInfo: DestinationArrivedInfo) { prefs.edit().putString("navStatus","목적지에 도착했어요").remove("navInstruction").apply() }
         override fun onError(errorCode: NaviErrorCode) { prefs.edit().putString("navStatus","Pleos 응답 확인 필요 · $errorCode").apply(); Log.w("DriveMateNavi","$errorCode") }
     }
     fun start() {

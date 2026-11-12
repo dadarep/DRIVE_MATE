@@ -41,7 +41,8 @@ object MapData {
                     val wait = 1200 - (System.currentTimeMillis() - lastSearch)
                     if (wait > 0) Thread.sleep(wait)
                     lastSearch = System.currentTimeMillis()
-                    val url = "https://photon.komoot.io/api/?q=${URLEncoder.encode(query, "UTF-8")}&limit=5&lat=${near.lat}&lon=${near.lon}"
+                    // Search only needs a location bias; ~1km precision keeps the exact position on the device.
+                    val url = "https://photon.komoot.io/api/?q=${URLEncoder.encode(query, "UTF-8")}&limit=5&lat=${"%.2f".format(java.util.Locale.US, near.lat)}&lon=${"%.2f".format(java.util.Locale.US, near.lon)}"
                     val features = JSONObject(String(request(url), Charsets.UTF_8)).getJSONArray("features")
                     List(features.length()) { i ->
                         val f = features.getJSONObject(i); val p = f.getJSONObject("properties")

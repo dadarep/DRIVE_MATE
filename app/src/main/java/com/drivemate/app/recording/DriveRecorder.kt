@@ -27,6 +27,7 @@ class DriveRecorder : Service() {
     private lateinit var extra: com.drivemate.app.PleosSignals
     private val coach = com.drivemate.app.CoachEngine()
     private lateinit var voice: com.drivemate.app.CoachVoice
+    private val earcons by lazy { com.drivemate.app.Earcons(this) }
     private var lastExtraLog = 0L
     private val handler = Handler(Looper.getMainLooper())
     private val storage by lazy { getSharedPreferences("driving", MODE_PRIVATE) }
@@ -38,6 +39,13 @@ class DriveRecorder : Service() {
     private var previousSpeed: Float? = null
     private var previousTime = 0L
     private var lastCandidate = 0L
+    private var lastDrop = 0L
+    private var braking = false
+    private var gapStart = 0L
+    private var gapMs = 0L
+    private var validSamples = 0
+    private var sessionStart = 0L
+    private var parkedSince = 0L
     private var status = ""
     private lateinit var locations: LocationManager
     private var route = JSONArray()
@@ -48,9 +56,12 @@ class DriveRecorder : Service() {
         }
         if (recording && point.hasAccuracy() && point.accuracy <= 50f && route.length() < 3600) {
             route.put(JSONArray().put(point.latitude).put(point.longitude))
+            if (route.length() % 10 == 0) storage.edit().putString("pendingRoute", route.toString()).apply()
         }
     }
-    private var smoothSince = 0L
+    private var sessionId = ""
+    private val moments = mutableListOf<com.drivemate.app.Garden.Moment>()
+    private fun kph(metersPerSecond: Float) = kotlin.math.round(metersPerSecond * 3.6f).toInt()
     private val poll = object : Runnable {
         override fun run() {
             update()
@@ -80,13 +91,21 @@ class DriveRecorder : Service() {
             startForeground(1, notification)
         }
         locations = getSystemService(LocationManager::class.java)
-        if (canLocate) {
-            runCatching {
-                locations.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
-            }.onFailure { Log.w("DriveMate", "위치 수신 시작 실패", it) }
-        }
+        if (!paused()) startLocation()
         recording = storage.getBoolean("recording", false)
         candidates = storage.getInt("pendingCount", 0)
+        if (recording) {
+            val now = SystemClock.elapsedRealtime()
+            gapMs = storage.getLong("pendingGapMs", 0)
+            validSamples = storage.getInt("pendingSamples", 0)
+            sessionStart = storage.getLong("sessionStart", now).takeIf { it <= now } ?: now
+            // Time while the service was dead is a gap too; elapsedRealtime restarts after reboot.
+            gapStart = storage.getLong("signalAt", 0).takeIf { it in 1..now } ?: now
+            sessionId = storage.getString("pendingSessionId", null) ?: java.util.UUID.randomUUID().toString()
+            moments += com.drivemate.app.Garden.Moment.listFromJson(storage.getString("pendingMoments", null))
+            route = runCatching { JSONArray(storage.getString("pendingRoute", "[]")) }.getOrDefault(JSONArray())
+            Log.i("DriveMate", "session restored id=$sessionId moments=${moments.size} route=${route.length()}")
+        }
         publish("unknown")
         runCatching {
             car = Car.createCar(this)
@@ -97,9 +116,57 @@ class DriveRecorder : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if(intent?.action == "VOICE_CHECK") voice.speak("드라이브 메이트가 함께할게요.")
+        // A plain start also follows a permission grant, so location may only now be allowed.
+        if (intent?.action == null && !paused()) startLocation()
+        if(intent?.action == "VOICE_CHECK") {
+            if (earcons.play(com.drivemate.app.Earcons.Cue.READY))
+                handler.postDelayed({ voice.speak("드라이브 메이트가 함께할게요.") }, earcons.durationMs(com.drivemate.app.Earcons.Cue.READY).toLong())
+        }
         if(intent?.action == "VOICE_STOP") voice.stop()
+        if(intent?.action == "PAUSE") {
+            voice.stop()
+            if (recording) saveSession(interrupted = true)
+            locations.removeUpdates(locationListener)
+            storage.edit().remove("liveLat").remove("liveLon").remove("locationAt").apply()
+            Log.i("DriveMate", "recording paused")
+        }
+        if(intent?.action == "RESUME") { startLocation(); Log.i("DriveMate", "recording resumed") }
         return START_STICKY
+    }
+    /** One synchronous write, so the trip and the session count can never be saved separately. False means retry later. */
+    private fun saveSession(interrupted: Boolean): Boolean {
+        val duration = SystemClock.elapsedRealtime() - sessionStart
+        val insufficient = com.drivemate.app.TripQuality.insufficient(validSamples, gapMs, duration)
+        val saved = storage.edit()
+            .putBoolean("recording", false)
+            .putString("lastSessionId", sessionId)
+            .putInt("lastCount", candidates)
+            .putString("lastMoments", com.drivemate.app.Garden.Moment.listToJson(com.drivemate.app.Garden.topMoments(moments)))
+            .remove("lastContexts")
+            .putLong("lastGapMs", gapMs)
+            .putBoolean("lastInsufficient", insufficient)
+            .putBoolean("lastInterrupted", interrupted)
+            .putString("lastRoute", route.toString())
+            .putInt("sessions", storage.getInt("sessions", 0) + 1)
+            .putBoolean("reviewed", false)
+            .remove("pendingMoments").remove("pendingRoute").remove("pendingSessionId")
+            .commit()
+        if (!saved) {
+            Log.w("DriveMate", "session save failed, retrying")
+            return false
+        }
+        recording = false
+        Log.i("DriveMate", "session saved id=$sessionId count=$candidates moments=${moments.size} samples=$validSamples gap=${gapMs}ms insufficient=$insufficient interrupted=$interrupted")
+        if (!interrupted) earcons.play(com.drivemate.app.Earcons.Cue.TRIP_END)
+        return true
+    }
+    // The choice lives in preferences so it survives app restarts and service recovery.
+    private fun paused() = storage.getBoolean("recordingPaused", false)
+    private fun startLocation() {
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
+        runCatching {
+            locations.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+        }.onFailure { Log.w("DriveMate", "위치 수신 시작 실패", it) }
     }
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -118,6 +185,12 @@ class DriveRecorder : Service() {
         car?.disconnect()
         super.onDestroy()
     }
+    // Pleos user builds block VHAL injection, so debug builds expose a file switch:
+    // run-as com.drivemate.app touch files/simulate_signal_loss
+    private val signalLossFlag by lazy {
+        java.io.File(filesDir, "simulate_signal_loss").takeIf { applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 }
+    }
+    private fun signalLossSimulated() = signalLossFlag?.exists() == true
     private fun read(id: Int): Any? = runCatching {
         properties?.getProperty<Any>(id, 0)?.takeIf { it.status == 0 }?.value
     }.getOrNull()
@@ -128,87 +201,100 @@ class DriveRecorder : Service() {
         val restricted = runCatching {
             restrictions?.currentCarUxRestrictions?.isRequiresDistractionOptimization
         }.getOrNull()
-        if (speed == null || gear == null || restricted == null) {
+        if (speed == null || gear == null || restricted == null || signalLossSimulated()) {
             previousSpeed = null
             coach.reset()
             storage.edit().remove("liveSpeed").apply()
-            smoothSince = 0
+            parkedSince = 0L
+            if (recording && gapStart == 0L) gapStart = SystemClock.elapsedRealtime()
             publish("unknown")
             return
         }
         val nowTick = SystemClock.elapsedRealtime()
-        val steering = extra.angle
-        val brake = extra.brake
-        val turn = extra.turn
-        val editor = storage.edit().putFloat("liveSpeed",speed).putLong("signalAt",nowTick)
+        if (gapStart != 0L) {
+            if (recording) {
+                gapMs += nowTick - gapStart
+                storage.edit().putLong("pendingGapMs", gapMs).apply()
+                Log.i("DriveMate", "signal gap closed total=${gapMs}ms")
+            }
+            gapStart = 0L
+        }
+        storage.edit().putFloat("liveSpeed",speed).putLong("signalAt",nowTick)
             .putString("gearLabel",when(gear){VehicleGear.GEAR_PARK -> "P";VehicleGear.GEAR_DRIVE -> "D";VehicleGear.GEAR_REVERSE -> "R";else -> "N"})
-            .putString("brakeLabel",brake?.let{if(it) "작동" else "해제"}?:"미수신")
-            .putString("turnLabel",turn?:"미수신").putLong("extraAt",nowTick)
-        if(steering != null) editor.putFloat("steering",steering) else editor.remove("steering")
-        editor.apply()
-        if(nowTick-lastExtraLog>10000){android.util.Log.i("DriveMateSignals","live brake=$brake turn=$turn angle=$steering speed=$speed");lastExtraLog=nowTick}
-        if(gear == VehicleGear.GEAR_DRIVE && speed >= 0) {
-            val limit = storage.getInt("speedLimit",0).takeIf { it > 0 && nowTick-storage.getLong("limitAt",0) in 0..10000 }
-            coach.sample(nowTick,speed,brake,steering,limit,turn)?.let { advice ->
-                storage.edit().putString("coachTitle",advice.title).putString("coachDetail",advice.detail).putString("coachKind",advice.kind).putLong("coachAt",nowTick).apply()
-                android.util.Log.i("DriveMateCoach",advice.kind+": "+advice.title)
+            .apply()
+        // Brake, turn signal and steering are logged for accuracy checks only, never shown or coached.
+        if(nowTick-lastExtraLog>10000){Log.i("DriveMateSignals","live brake=${extra.brake} turn=${extra.turn} angle=${extra.angle} speed=$speed");lastExtraLog=nowTick}
+        val paused = paused()
+        if (paused && recording) saveSession(interrupted = true)
+        if(gear == VehicleGear.GEAR_DRIVE && speed >= 0 && !paused) {
+            // No earcon while driving; only the short spoken note when the user turned voice on.
+            coach.sample(nowTick,speed)?.let { advice ->
+                Log.i("DriveMateCoach",advice.kind+": "+advice.title)
                 voice.speak(advice.title)
             }
         } else coach.reset()
-        val parked = gear == VehicleGear.GEAR_PARK && kotlin.math.abs(speed) < 0.05f && !restricted
+        val parkedNow = gear == VehicleGear.GEAR_PARK && kotlin.math.abs(speed) < 0.05f && !restricted
+        if (!parkedNow) parkedSince = 0L else if (parkedSince == 0L) parkedSince = nowTick
+        // All three parking conditions must hold for 2s before the screen unlocks or the trip is saved.
+        val parked = parkedNow && nowTick - parkedSince >= 2000L
+        val moving = gear == VehicleGear.GEAR_DRIVE || gear == VehicleGear.GEAR_REVERSE
+        val absSpeed = kotlin.math.abs(speed)
         if (!parked) {
-            if (gear == VehicleGear.GEAR_DRIVE && speed > 0.05f && !recording) {
+            // While paused, speed only drives the parking lock; no session, sample or route is kept.
+            if (moving && absSpeed > 0.05f && !recording && !paused) {
                 recording = true
                 candidates = 0
                 route = JSONArray()
-                storage.edit().putBoolean("recording", true).putInt("pendingCount", 0).remove("feedback").apply()
+                moments.clear()
+                gapMs = 0L; gapStart = 0L; validSamples = 0
+                sessionStart = SystemClock.elapsedRealtime()
+                sessionId = java.util.UUID.randomUUID().toString()
+                storage.edit().putBoolean("recording", true).putInt("pendingCount", 0).putString("pendingSessionId", sessionId)
+                    .remove("pendingMoments").remove("pendingRoute")
+                    .putLong("pendingGapMs", 0).putInt("pendingSamples", 0).putLong("sessionStart", sessionStart).apply()
                 lastCandidate = 0
-                Log.i("DriveMate", "session started")
+                braking = false
+                Log.i("DriveMate", "session started gear=$gear")
             }
-            if (recording && gear == VehicleGear.GEAR_DRIVE && speed >= 0f) {
+            if (recording && moving) {
+                val speed = absSpeed
                 val now = SystemClock.elapsedRealtime()
                 val elapsed = now - previousTime
                 val last = previousSpeed
+                if (last != null && elapsed in 100L..750L) {
+                    validSamples++
+                    if (validSamples <= com.drivemate.app.TripQuality.MIN_SAMPLES || validSamples % 20 == 0) storage.edit().putInt("pendingSamples", validSamples).apply()
+                }
+                if (last != null && last - speed > 0.2f) lastDrop = now
+                // One braking maneuver spans several samples; count it once until slowing has paused for 2s.
+                if (braking && now - lastDrop > 2000L) braking = false
                 if (last != null && elapsed in 100L..750L &&
                     last - speed >= 1.5f && (last - speed) * 1000f / elapsed >= 3.0f &&
-                    now - lastCandidate >= 1500L
+                    now - lastCandidate >= 1500L && !braking
                 ) {
+                    braking = true
                     candidates++
-                    storage.edit().putInt("pendingCount", candidates).putString("feedback", "급감속 후보 감지").apply()
+                    moments += com.drivemate.app.Garden.Moment(now - sessionStart, kph(last), kph(speed))
+                    storage.edit().putInt("pendingCount", candidates).putString("pendingMoments", com.drivemate.app.Garden.Moment.listToJson(moments)).apply()
                     lastCandidate = now
                     Log.i("DriveMate", "deceleration candidate count=$candidates")
-                }
-                val steady = last != null && speed >= 2f && elapsed in 100L..750L &&
-                    kotlin.math.abs(last - speed) * 1000f / elapsed <= 1.0f
-                if (steady) {
-                    if (smoothSince == 0L) smoothSince = now
-                    if (now - smoothSince >= 3000L && storage.getString("feedback", "") != "속도가 안정적이었어요") {
-                        storage.edit().putString("feedback", "속도가 안정적이었어요").apply()
-                    }
-                } else {
-                    smoothSince = 0L
+                } else if (braking && last != null && last - speed > 0.2f && moments.isNotEmpty()) {
+                    // The moment ends where this braking maneuver ends, not at the first sample that crossed the threshold.
+                    moments[moments.lastIndex] = moments.last().copy(toKph = kph(speed))
+                    storage.edit().putString("pendingMoments", com.drivemate.app.Garden.Moment.listToJson(moments)).apply()
                 }
                 previousSpeed = speed
                 previousTime = now
             } else {
                 previousSpeed = null
-            smoothSince = 0
             }
-            publish("locked")
+            publish(if (parkedNow) "settling" else "locked")
             return
         }
         previousSpeed = null
-        if (recording) {
-            recording = false
-            storage.edit()
-                .putBoolean("recording", false)
-                .putInt("lastCount", candidates)
-                .putString("lastRoute", route.toString())
-                .putInt("totalCount", storage.getInt("totalCount", 0) + candidates)
-                .putInt("sessions", storage.getInt("sessions", 0) + 1)
-                .putBoolean("reviewed", false)
-                .apply()
-            Log.i("DriveMate", "session saved count=$candidates")
+        if (recording && !saveSession(interrupted = false)) {
+            publish("settling")
+            return
         }
         publish("parked")
     }
