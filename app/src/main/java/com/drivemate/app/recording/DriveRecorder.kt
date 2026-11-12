@@ -174,7 +174,8 @@ class DriveRecorder : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun publish(value: String) {
-        if (value == status) return
+        // Delete-all also removes this key, so it is rewritten even when the state itself did not change.
+        if (value == status && storage.contains("vehicleState")) return
         status = value
         storage.edit().putString("vehicleState", value).apply()
     }

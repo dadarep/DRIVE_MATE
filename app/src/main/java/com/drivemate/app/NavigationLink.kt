@@ -24,9 +24,8 @@ class NavigationLink(context: Context) {
                 .putInt("navSeconds",d.remainTime).putLong("navAt",android.os.SystemClock.elapsedRealtime()).putString("navStatus","Pleos 목적지 연동됨").apply()
             Log.i("DriveMateNavi", "destination=${d.name}")
         }
-        override fun onCurrentRoadSpeedLimit(speedLimit: Int) {
-            prefs.edit().putInt("speedLimit",speedLimit).putLong("limitAt",android.os.SystemClock.elapsedRealtime()).apply()
-        }
+        // Speed limits stay unused until their accuracy is verified, so they are not stored either.
+        override fun onCurrentRoadSpeedLimit(speedLimit: Int) = Unit
         override fun onDrivingInfo(drivingInfo: DrivingInfo) {
             prefs.edit().putInt("navDistance",drivingInfo.destination.distance)
                 .putInt("navSeconds",drivingInfo.destination.duration).putLong("navAt",android.os.SystemClock.elapsedRealtime()).apply()

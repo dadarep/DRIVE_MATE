@@ -660,7 +660,11 @@ class MainActivity : Activity() {
                 // Includes keys written by earlier versions so no past coaching or signal values survive.
                 storage.edit().apply{listOf("garden","gardenBroken","sessions","reviewed","goalDraft","goalSession","goalCompletedSession","lastResponse","leaves","totalCount",
                     "destinationName","destinationLat","destinationLon","feedback","coachTitle","coachDetail","coachKind","coachAt",
-                    "brakeLabel","turnLabel","steering","extraAt","pendingCount","pendingSamples","pendingGapMs","sessionStart").forEach{remove(it)};lastTripKeys.forEach{remove(it)}}.commit()
+                    "brakeLabel","turnLabel","steering","extraAt","pendingCount","pendingSamples","pendingGapMs","sessionStart",
+                    "pendingMoments","pendingRoute","pendingSessionId","recording",
+                    "liveLat","liveLon","locationAt","bearing","liveSpeed","signalAt","vehicleState","gearLabel",
+                    "navDestination","navLat","navLon","navDistance","navSeconds","navAt","navStatus","navInstruction",
+                    "turnDistance","thenInstruction","thenDistance","tbtAt","speedLimit","limitAt").forEach{remove(it)};lastTripKeys.forEach{remove(it)}}.commit()
             } else {
                 val sessions=storage.getInt("sessions",0)
                 saveGarden(garden().withoutSession(tripId(sessions),max(0,sessions-1))){putInt("sessions",max(0,sessions-1));putBoolean("reviewed",true);lastTripKeys.forEach{remove(it)}}
