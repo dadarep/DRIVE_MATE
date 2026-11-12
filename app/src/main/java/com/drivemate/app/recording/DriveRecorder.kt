@@ -75,10 +75,7 @@ class DriveRecorder : Service() {
         voice = com.drivemate.app.CoachVoice(this); voice.start()
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("driving", "주행 기록", NotificationManager.IMPORTANCE_LOW))
-        val notification = Notification.Builder(this, "driving")
-            .setSmallIcon(android.R.drawable.ic_menu_compass)
-            .setContentTitle("DRIVE MATE 주행 기록")
-            .setOngoing(true).build()
+        val notification = notification()
         val canLocate = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         if (Build.VERSION.SDK_INT >= 34) {
@@ -131,6 +128,7 @@ class DriveRecorder : Service() {
             Log.i("DriveMate", "recording paused")
         }
         if(intent?.action == "RESUME") { startLocation(); Log.i("DriveMate", "recording resumed") }
+        if(intent?.action == "PAUSE" || intent?.action == "RESUME") getSystemService(NotificationManager::class.java).notify(1, notification())
         return START_STICKY
     }
     /** One synchronous write, so the trip and the session count can never be saved separately. False means retry later. */
@@ -162,6 +160,11 @@ class DriveRecorder : Service() {
     }
     // The choice lives in preferences so it survives app restarts and service recovery.
     private fun paused() = storage.getBoolean("recordingPaused", false)
+    private fun notification() = Notification.Builder(this, "driving")
+        .setSmallIcon(android.R.drawable.ic_menu_compass)
+        .setContentTitle(if (paused()) "DRIVE MATE 기록 중지됨" else "DRIVE MATE 주행 기록")
+        .setContentText(if (paused()) "속도·위치를 기록하지 않아요" else "주행하면 속도 변화와 경로를 이 기기에 기록해요")
+        .setOngoing(true).build()
     private fun startLocation() {
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         runCatching {

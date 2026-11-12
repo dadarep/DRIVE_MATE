@@ -94,6 +94,8 @@ class MainActivity : Activity() {
         handler.post(poll)
     }
     private var grantKey=""
+    private var wasLocked=true
+    private var seenSessions=-1
     // Pleos keeps this activity resumed while system settings is open, so grants are noticed by polling, not onResume.
     private fun syncGrants(){
         val key="${!speedDenied()}/${checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED}"
@@ -216,7 +218,7 @@ class MainActivity : Activity() {
         if(!canEdit())return
         routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());navigation.cancel()
         storage.edit().remove("destinationLat").remove("destinationLon").remove("destinationName").apply()
-        routeMessage="목적지를 선택하면 도로 경로를 보여 드려요.";update()
+        map.recenter();routeMessage="목적지를 선택하면 도로 경로를 보여 드려요.";update()
     }
     private fun tripSummary(count:Int):String{
         val gap=TripQuality.gapLabel(storage.getLong("lastGapMs",0))
@@ -394,6 +396,12 @@ class MainActivity : Activity() {
             thenRow.visibility=if(then!=null)View.VISIBLE else View.GONE
         }
         overview.visibility=if(selected!=null)View.VISIBLE else View.GONE
+        // Map tools are hidden while driving, so a view panned while parked must not strand the car off screen.
+        if(locked&&!wasLocked){if(map.route.isEmpty())map.recenter() else map.fit()}
+        wasLocked=locked
+        val sessions=storage.getInt("sessions",0)
+        // The preview was measured from the old start; after a trip it is re-measured from where the car parked.
+        if(sessions!=seenSessions){if(seenSessions>=0&&selected!=null&&roadRoute!=null){roadRoute=null;pendingRoute=true};seenSessions=sessions}
         mapTools.visibility=if(locked)View.GONE else View.VISIBLE
         map.interactive=!locked
         voice.visibility=if(locked)View.GONE else View.VISIBLE
@@ -578,7 +586,7 @@ class MainActivity : Activity() {
             }
         }){
             Garden.PRESET_GOALS.forEach{goal->
-                val v=text(goal,24f,ink,true).apply{setPadding(dp(24),dp(20),dp(24),dp(20));isClickable=true;setOnClickListener{chosen=goal;field.setText("");storage.edit().remove("goalDraft").apply();paint()}}
+                val v=text(goal,24f,ink,true).apply{setPadding(dp(24),dp(20),dp(24),dp(20));isClickable=true;setOnClickListener{field.setText("");chosen=goal;storage.edit().remove("goalDraft").apply();paint()}}
                 rows+=goal to v;addView(v,LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=dp(10)})
             }
             if(chosen !in Garden.PRESET_GOALS)field.setText(chosen)
@@ -588,6 +596,7 @@ class MainActivity : Activity() {
                 override fun afterTextChanged(s:android.text.Editable?){
                     val typed=s?.toString().orEmpty()
                     if(typed.isNotBlank()){chosen=typed;storage.edit().putString("goalDraft",typed).apply();paint()}
+                    else if(chosen !in Garden.PRESET_GOALS){chosen="";storage.edit().remove("goalDraft").apply();paint()}
                 }
             })
             addView(field,LinearLayout.LayoutParams(-1,-2).apply{topMargin=dp(6)});addView(error)
