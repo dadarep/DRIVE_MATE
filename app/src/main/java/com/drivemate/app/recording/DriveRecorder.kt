@@ -128,7 +128,8 @@ class DriveRecorder : Service() {
             Log.i("DriveMate", "recording paused")
         }
         if(intent?.action == "RESUME") { startLocation(); Log.i("DriveMate", "recording resumed") }
-        if(intent?.action == "PAUSE" || intent?.action == "RESUME") getSystemService(NotificationManager::class.java).notify(1, notification())
+        // A plain start can follow a notification grant, so the notice is reposted then too.
+        if(intent?.action == null || intent.action == "PAUSE" || intent.action == "RESUME") getSystemService(NotificationManager::class.java).notify(1, notification())
         return START_STICKY
     }
     /** One synchronous write, so the trip and the session count can never be saved separately. False means retry later. */

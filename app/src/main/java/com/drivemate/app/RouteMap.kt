@@ -39,6 +39,9 @@ class RouteMap(context: Context) : View(context) {
     }.getOrDefault(emptyList())
     private val sortedRoads = roads.sortedBy { it.first }
     private val tileRect = RectF()
+    private val shape = Path()
+    private val line = Path()
+    private val credit = "© OpenStreetMap contributors · 경로 OSRM"
     init { contentDescription = "도로 지도. 현재 위치와 목적지, 탐색된 경로 표시" }
     private val gesture = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
@@ -52,7 +55,12 @@ class RouteMap(context: Context) : View(context) {
         }
     })
     var interactive = true
-    override fun onTouchEvent(event: MotionEvent): Boolean = interactive && gesture.onTouchEvent(event)
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!interactive) return false
+        if (event.actionMasked == MotionEvent.ACTION_UP && event.eventTime - event.downTime < android.view.ViewConfiguration.getTapTimeout()) performClick()
+        return gesture.onTouchEvent(event)
+    }
+    override fun performClick(): Boolean = super.performClick()
     override fun onAttachedToWindow() { super.onAttachedToWindow(); detached = false }
     override fun onDetachedFromWindow() { detached = true; super.onDetachedFromWindow() }
     fun locate(point: GeoPoint?, bearing: Float = 0f) {
@@ -138,7 +146,7 @@ class RouteMap(context: Context) : View(context) {
         }
         destination?.let { d ->
             val(x,y)=position(d.point);paint.color=Color.rgb(241,79,79);c.drawCircle(x,y-14*u,12*u,paint)
-            c.drawPath(Path().apply{moveTo(x-8*u,y-7*u);lineTo(x,y+5*u);lineTo(x+8*u,y-7*u);close()},paint)
+            c.drawPath(pin(x,y),paint)
             paint.color=Color.WHITE;c.drawCircle(x,y-14*u,4*u,paint)
             paint.textSize=16f*u;paint.typeface=Typeface.DEFAULT_BOLD
             val label=d.name.take(18);val tw=paint.measureText(label)
@@ -151,19 +159,21 @@ class RouteMap(context: Context) : View(context) {
         preview?.let { p ->
             val(x,y)=position(p);paint.color=Color.argb(60,31,96,247);c.drawCircle(x,y,24*u,paint)
             paint.color=Color.rgb(31,96,247);c.drawCircle(x,y-14*u,12*u,paint)
-            c.drawPath(Path().apply{moveTo(x-8*u,y-7*u);lineTo(x,y+5*u);lineTo(x+8*u,y-7*u);close()},paint)
+            c.drawPath(pin(x,y),paint)
             paint.color=Color.WHITE;c.drawCircle(x,y-14*u,4*u,paint)
         }
         current?.let { p ->
             val(x,y)=position(p);paint.color=Color.argb(35,35,100,255);c.drawCircle(x,y,29*u,paint)
             paint.color=Color.WHITE;c.drawCircle(x,y,17*u,paint)
             c.save();c.rotate(heading,x,y);paint.color=Color.rgb(31,96,247)
-            c.drawPath(Path().apply{moveTo(x,y-12*u);lineTo(x+9*u,y+9*u);lineTo(x,y+5*u);lineTo(x-9*u,y+9*u);close()},paint);c.restore()
+            shape.reset();shape.moveTo(x,y-12*u);shape.lineTo(x+9*u,y+9*u);shape.lineTo(x,y+5*u);shape.lineTo(x-9*u,y+9*u);shape.close()
+            c.drawPath(shape,paint);c.restore()
         }
         paint.typeface=Typeface.DEFAULT;paint.textSize=9f*u;paint.color=if(night) Color.argb(210,27,33,43) else Color.argb(210,255,255,255)
-        val credit="© OpenStreetMap contributors · 경로 OSRM";val cw=paint.measureText(credit)
+        val cw=paint.measureText(credit)
         c.drawRect(width-cw-16*u,height-16*u,width.toFloat(),height.toFloat(),paint);paint.color=if(night) Color.rgb(162,174,190) else Color.rgb(91,104,115)
         c.drawText(credit,width-cw-8*u,height-5*u,paint)
     }
-    private fun path(points:List<GeoPoint>)=Path().apply { points.forEachIndexed { i,p -> val(x,y)=position(p);if(i==0)moveTo(x,y)else lineTo(x,y) } }
+    private fun pin(x:Float,y:Float)=shape.apply { reset();moveTo(x-8*u,y-7*u);lineTo(x,y+5*u);lineTo(x+8*u,y-7*u);close() }
+    private fun path(points:List<GeoPoint>)=line.apply { reset();points.forEachIndexed { i,p -> val(x,y)=position(p);if(i==0)moveTo(x,y)else lineTo(x,y) } }
 }

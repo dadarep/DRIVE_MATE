@@ -79,7 +79,9 @@ class MainActivity : Activity() {
     private var lastNavDestination=""
     private var pendingRoute=false
     private var dialog:AlertDialog?=null
-    private val permissions=arrayOf("android.car.permission.CAR_SPEED",android.Manifest.permission.ACCESS_COARSE_LOCATION,android.Manifest.permission.ACCESS_FINE_LOCATION)
+    // Notifications only show the recording/paused state; Android 13+ hides even the service notice without this grant.
+    private val permissions=arrayOf("android.car.permission.CAR_SPEED",android.Manifest.permission.ACCESS_COARSE_LOCATION,android.Manifest.permission.ACCESS_FINE_LOCATION)+
+        (if(Build.VERSION.SDK_INT>=33)arrayOf(android.Manifest.permission.POST_NOTIFICATIONS) else emptyArray())
     private val poll=object:Runnable { override fun run(){update();handler.postDelayed(this,300)} }
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,7 +100,7 @@ class MainActivity : Activity() {
     private var seenSessions=-1
     // Pleos keeps this activity resumed while system settings is open, so grants are noticed by polling, not onResume.
     private fun syncGrants(){
-        val key="${!speedDenied()}/${checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED}"
+        val key=permissions.joinToString{"${checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED}"}
         if(key==grantKey)return
         grantKey=key;if(!speedDenied())startRecorder()
     }
@@ -214,9 +216,16 @@ class MainActivity : Activity() {
         root.addView(right,LinearLayout.LayoutParams(0,-1,1f).apply{leftMargin=dp(20)})
         setContentView(root)
     }
+    private var reclaimUntil=0L
+    // Pleos brings its navigation app to the front when a route is cancelled; clearing or deleting should keep the driver here.
+    private fun cancelNavigation(){reclaimUntil=SystemClock.elapsedRealtime()+3000;navigation.cancel()}
+    override fun onTopResumedActivityChanged(top:Boolean){
+        super.onTopResumedActivityChanged(top)
+        if(!top&&SystemClock.elapsedRealtime()<reclaimUntil){reclaimUntil=0;startActivity(Intent(this,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))}
+    }
     private fun clearRoute(){
         if(!canEdit())return
-        routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());navigation.cancel()
+        routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());cancelNavigation()
         storage.edit().remove("destinationLat").remove("destinationLon").remove("destinationName").apply()
         map.recenter();routeMessage="목적지를 선택하면 도로 경로를 보여 드려요.";update()
     }
@@ -383,7 +392,7 @@ class MainActivity : Activity() {
         coachDetail.text=when{noSpeed->"차속을 받아야 주행을 기록할 수 있어요. 이 카드를 눌러 권한을 요청해요.";!signalFresh->"연결이 확인되면 주행 기록을 이어가요.";tripDone->tripSummary(lastCount);paused&&parked->"속도·위치를 기록하지 않아요. 설정에서 다시 켤 수 있어요.";paused->"속도·위치를 기록하지 않아요. 주차 후 설정에서 다시 켤 수 있어요.";parked&&goalPending->if(goalDue)"주행 회고에서 어땠는지 답하면 첫 잎이 돋아요." else "이번 주행의 연습 목표예요. 주차 후 어땠는지 돌아봐요.";parked->"출발하면 속도 변화를 기록하고, 주차 후 함께 돌아봐요.";else->"목적지 변경과 회고는 주차 후 열려요."}
         val accent=if(parked)blue else muted
         coachAccent.setColor(accent);coachLabel.setTextColor(if(accent==blue)accentText else accent)
-        coachLabel.text=when{noSpeed->"권한 필요";tripDone->"주행 완료";paused->"기록 중지";parked&&goalPending->if(goalDue)"🌱 돌아볼 목표" else "🌱 오늘의 연습 목표";driving->"기록 중";else->"드라이빙 정원"}
+        coachLabel.text=when{noSpeed->"권한 필요";tripDone&&paused->"주행 완료 · 기록 중지";tripDone->"주행 완료";paused->"기록 중지";parked&&goalPending->if(goalDue)"🌱 돌아볼 목표" else "🌱 오늘의 연습 목표";driving->"기록 중";else->"드라이빙 정원"}
         coachCard.isClickable=noSpeed||tripDone||(parked&&goalPending)
         val instruction=storage.getString("navInstruction",null)?.takeIf{it.isNotBlank()&&selected!=null&&now-storage.getLong("tbtAt",0) in 0..30000}
         routeBanner.visibility=if(instruction!=null&&!locked)View.VISIBLE else View.GONE
@@ -637,6 +646,7 @@ class MainActivity : Activity() {
             addView(section("권한",28))
             note("차속 · ${if(granted("android.car.permission.CAR_SPEED"))"허용됨" else "허용 안 됨"} · 주행 기록에 꼭 필요해요")
             note("위치 · ${if(granted(android.Manifest.permission.ACCESS_FINE_LOCATION))"허용됨" else "허용 안 됨"} · 지도와 경로를 기기 안에서 그릴 때만 써요(선택)")
+            if(Build.VERSION.SDK_INT>=33)note("알림 · ${if(granted(android.Manifest.permission.POST_NOTIFICATIONS))"허용됨" else "허용 안 됨"} · 기록 중인지, 중지됐는지 알려요(선택)")
             if(permissions.any{!granted(it)})addView(button("권한 다시 요청"){dialog?.dismiss();requestPermissions(permissions,1)},LinearLayout.LayoutParams(-1,dp(76)).apply{topMargin=dp(16)})
             addView(section("데이터",28))
             choice("기록 삭제","최근 주행 기록 또는 전체 데이터를 지워요"){if(canEdit()){dialog?.dismiss();deleteMenu()}}
@@ -656,25 +666,17 @@ class MainActivity : Activity() {
         sheet(if(all)"전체 데이터를 삭제할까요?" else "최근 주행 기록을 삭제할까요?","삭제하면 되돌릴 수 없어요.",primary="삭제",cancel="취소",onPrimary={s->
             if(!canEdit())return@sheet
             s.primary?.isEnabled=false
-            val ok=if(all){
-                // Includes keys written by earlier versions so no past coaching or signal values survive.
-                storage.edit().apply{listOf("garden","gardenBroken","sessions","reviewed","goalDraft","goalSession","goalCompletedSession","lastResponse","leaves","totalCount",
-                    "destinationName","destinationLat","destinationLon","feedback","coachTitle","coachDetail","coachKind","coachAt",
-                    "brakeLabel","turnLabel","steering","extraAt","pendingCount","pendingSamples","pendingGapMs","sessionStart",
-                    "pendingMoments","pendingRoute","pendingSessionId","recording",
-                    "liveLat","liveLon","locationAt","bearing","liveSpeed","signalAt","vehicleState","gearLabel",
-                    "navDestination","navLat","navLon","navDistance","navSeconds","navAt","navStatus","navInstruction",
-                    "turnDistance","thenInstruction","thenDistance","tbtAt","speedLimit","limitAt").forEach{remove(it)};lastTripKeys.forEach{remove(it)}}.commit()
-            } else {
+            if(all)cancelNavigation()
+            val ok=if(all)DataReset.wipeAll(storage) else {
                 val sessions=storage.getInt("sessions",0)
                 saveGarden(garden().withoutSession(tripId(sessions),max(0,sessions-1))){putInt("sessions",max(0,sessions-1));putBoolean("reviewed",true);lastTripKeys.forEach{remove(it)}}
             }
             if(!ok){s.primary?.isEnabled=true;return@sheet}
-            if(all){routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());navigation.cancel();routeMessage="목적지를 선택하면 도로 경로를 보여 드려요."}
+            if(all){routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());lastNavDestination="";routeMessage="목적지를 선택하면 도로 경로를 보여 드려요."}
             s.dialog.dismiss();Toast.makeText(this,if(all)"전체 데이터를 삭제했어요." else "최근 주행 기록을 삭제했어요.",Toast.LENGTH_SHORT).show();update()
         })
     }
-    private val lastTripKeys=listOf("lastSessionId","lastCount","lastMoments","lastContexts","lastGapMs","lastInsufficient","lastInterrupted","lastRoute")
+    private val lastTripKeys=DataReset.LAST_TRIP
     private fun dp(value:Int)=(value*resources.displayMetrics.density).roundToInt()
     override fun onDestroy(){handler.removeCallbacksAndMessages(null);dialog?.dismiss();if(::navigation.isInitialized)navigation.close();super.onDestroy()}
 }

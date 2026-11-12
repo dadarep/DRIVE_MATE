@@ -15,9 +15,12 @@ class NavigationLink(context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private var active = false
     private var closed = false
+    // After the driver clears or deletes the destination, late guidance callbacks must not write it back.
+    private var guiding = true
     private val listener = object : NaviHelperEventListener {
         override fun onDestinationInfo(destinationInfo: DestinationInfo) {
             val d = destinationInfo
+            if (!guiding) return
             if (!d.latitude.isFinite() || !d.longitude.isFinite() || (d.latitude == 0.0 && d.longitude == 0.0)) return
             prefs.edit().putString("navDestination",d.name).putString("navLat",d.latitude.toString())
                 .putString("navLon",d.longitude.toString()).putInt("navDistance",d.remainDistance)
@@ -27,17 +30,19 @@ class NavigationLink(context: Context) {
         // Speed limits stay unused until their accuracy is verified, so they are not stored either.
         override fun onCurrentRoadSpeedLimit(speedLimit: Int) = Unit
         override fun onDrivingInfo(drivingInfo: DrivingInfo) {
+            if (!guiding) return
             prefs.edit().putInt("navDistance",drivingInfo.destination.distance)
                 .putInt("navSeconds",drivingInfo.destination.duration).putLong("navAt",android.os.SystemClock.elapsedRealtime()).apply()
         }
         override fun onTBTInfo(tbtInfoList: List<TBTInfo>) {
+            if (!guiding) return
             val next = tbtInfoList.firstOrNull() ?: return
             val then = tbtInfoList.getOrNull(1)
             prefs.edit().putString("navInstruction",next.description).putFloat("turnDistance",next.distance.toFloat()).putLong("tbtAt",android.os.SystemClock.elapsedRealtime())
                 .apply { if (then != null) putString("thenInstruction",then.description).putFloat("thenDistance",then.distance.toFloat()) else remove("thenInstruction") }.apply()
         }
-        override fun onRoutingCompleted() { prefs.edit().putString("navStatus","Pleos 경로 안내 연결됨").apply(); refresh() }
-        override fun onRouteStarted(routeStartInfo: RouteStartInfo) { refresh() }
+        override fun onRoutingCompleted() { guiding = true; prefs.edit().putString("navStatus","Pleos 경로 안내 연결됨").apply(); refresh() }
+        override fun onRouteStarted(routeStartInfo: RouteStartInfo) { guiding = true; refresh() }
         override fun onDestinationChanged() { refresh() }
         override fun onRouteCancelled() { prefs.edit().putString("navStatus","Pleos 안내 종료").remove("navInstruction").remove("speedLimit").apply() }
         override fun onDestinationArrived(destinationArrivedInfo: DestinationArrivedInfo) { prefs.edit().putString("navStatus","목적지에 도착했어요").remove("navInstruction").apply() }
@@ -51,10 +56,15 @@ class NavigationLink(context: Context) {
     private fun refresh() { if (active && !closed) runCatching { helper.getDestinationInfo(); helper.getTBTInfo() }.onFailure { Log.w("DriveMateNavi","query",it) } }
     fun navigate(destination: Destination): Boolean = runCatching {
         check(active)
+        guiding = true
         helper.requestRoute(RouteInfo(latitude=destination.point.lat,longitude=destination.point.lon,poiName=destination.name,address=destination.address,poiId="",poiSubId="0"))
         prefs.edit().putString("navStatus","Pleos에 목적지 전달 중").remove("navInstruction").remove("speedLimit").apply()
         true
     }.getOrElse { prefs.edit().putString("navStatus","Pleos 목적지 전달 실패").apply(); false }
-    fun cancel() { if(active) runCatching { helper.cancelRoute() }; prefs.edit().remove("navDestination").remove("navLat").remove("navLon").remove("navInstruction").remove("speedLimit").apply() }
+    fun cancel() {
+        guiding = false
+        if(active) runCatching { helper.cancelRoute() }
+        prefs.edit().apply { listOf("navDestination","navLat","navLon","navDistance","navSeconds","navAt","navStatus","navInstruction","turnDistance","thenInstruction","thenDistance","tbtAt","speedLimit").forEach { remove(it) } }.apply()
+    }
     fun close() { closed=true; handler.removeCallbacksAndMessages(null); if(active)runCatching { helper.removeListener(listener); helper.release() }; active=false }
 }
