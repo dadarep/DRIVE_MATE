@@ -8,10 +8,10 @@ internal object DriveMapStyle {
     const val tiles = "https://tiles.openfreemap.org/planet/latest"
     const val glyphs = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf"
     val roads = arrayOf("street", "arterial", "motorway")
-    val overlays = arrayOf("route-outline", "route-line", "route-directions", "destination-dot", "destination-label", "selection-dot", "position-halo", "position-dot", "position-arrow")
+    val overlays = arrayOf("route-tail", "route-outline", "route-line", "route-directions", "destination-dot", "destination-label", "selection-dot", "position-halo", "position-dot", "position-arrow")
     fun json(night: Boolean): String {
         val sources = JSONObject().put("basemap", JSONObject().put("type", "vector").put("url", tiles))
-        for (id in listOf("route-data", "destination-data", "position-data", "selection-data")) {
+        for (id in listOf("route-data", "route-tail-data", "destination-data", "position-data", "selection-data")) {
             sources.put(id, JSONObject().put("type", "geojson").put("data", JSONObject().put("type", "FeatureCollection").put("features", JSONArray())))
         }
         val layers = JSONArray()
@@ -56,6 +56,7 @@ internal object DriveMapStyle {
         add("district-names", "symbol", """{"text-color":"$label","text-halo-color":"$background","text-halo-width":2}""", "place",
             """["in","class","city","town","suburb","quarter","neighbourhood"]""",
             """{"text-field":$name,"text-font":["Noto Sans Regular"],"text-size":["interpolate",["linear"],["zoom"],8,13,16,20],"text-padding":24}""", 8)
+        add("route-tail", "line", """{"line-color":"${if(night) "#72A7FF" else "#2868EC"}","line-width":5,"line-dasharray":[1.2,1.2]}""", layout="""{"line-cap":"butt","line-join":"round"}""", source="route-tail-data")
         add("route-outline", "line", """{"line-color":"${if(night) "#13202C" else "#FFFFFF"}","line-width":13}""", layout=round, source="route-data")
         add("route-line", "line", """{"line-color":"${if(night) "#72A7FF" else "#2868EC"}","line-width":8}""", layout=round, source="route-data")
         add("route-directions", "symbol", "{}", layout="""{"symbol-placement":"line","symbol-spacing":160,"icon-image":"route-direction","icon-size":0.65,"icon-rotation-alignment":"map","icon-pitch-alignment":"map","icon-allow-overlap":false,"icon-keep-upright":false}""", minZoom=14, source="route-data")

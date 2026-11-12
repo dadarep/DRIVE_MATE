@@ -62,6 +62,7 @@ class RouteMap(context: Context) : FrameLayout(context) {
     var current: GeoPoint? = null; private set
     var destination: Destination? = null; private set
     var route: List<GeoPoint> = emptyList(); private set
+    private val progress = RouteProgress()
     var onPick: ((GeoPoint) -> Unit)? = null
     var tileState: ((String) -> Unit)? = null
         set(value) { field = value; value?.invoke(lastState) }
@@ -189,16 +190,16 @@ class RouteMap(context: Context) : FrameLayout(context) {
         if (next == current && direction == heading && known == headingKnown) return
         headingKnown=known
         current = next; heading = direction
-        updatePointSources()
+        updatePointSources(); updateRouteSource()
         if (camera.following && next != null) applyCamera(true)
     }
     fun setDestination(value: Destination?) {
         destination = value?.takeIf { validMapPoint(it.point) }
-        updatePointSources()
+        updatePointSources(); updateRouteSource()
     }
     fun setRoute(points: List<GeoPoint>) {
         route = points.filter(::validMapPoint)
-        updateRouteSource()
+        progress.reset(); updateRouteSource()
         if (interactive) fit() else recenter()
     }
     fun recenter() {
@@ -241,8 +242,14 @@ class RouteMap(context: Context) : FrameLayout(context) {
         if (w > 0 && h > 0) post { if (!destroyed) applyCamera(false) }
     }
     private fun updateRouteSource() {
-        val features = if (route.distinct().size >= 2) listOf(Feature.fromGeometry(LineString.fromLngLats(route.map { it.geo() }))) else emptyList()
-        style?.getSourceAs<GeoJsonSource>("route-data")?.setGeoJson(FeatureCollection.fromFeatures(features))
+        val ahead = progress.ahead(route, current)
+        fun line(points: List<GeoPoint>) =
+            if (points.distinct().size >= 2) listOf(Feature.fromGeometry(LineString.fromLngLats(points.map { it.geo() }))) else emptyList()
+        style?.getSourceAs<GeoJsonSource>("route-data")?.setGeoJson(FeatureCollection.fromFeatures(line(ahead)))
+        // Road routing ends at the nearest road; the last stretch to an off-road destination is drawn dashed.
+        val end = ahead.lastOrNull(); val target = destination?.point
+        val tail = if (end != null && target != null && RouteProgress.meters(end, target) > 3) line(listOf(end, target)) else emptyList()
+        style?.getSourceAs<GeoJsonSource>("route-tail-data")?.setGeoJson(FeatureCollection.fromFeatures(tail))
     }
     private fun updatePointSources() {
         fun pointSource(id: String, p: GeoPoint?, edit: (Feature) -> Unit = {}) {
