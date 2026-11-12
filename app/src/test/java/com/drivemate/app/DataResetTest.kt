@@ -26,7 +26,7 @@ class DataResetTest {
     @Test
     fun keptKeysAreOnlySettings() {
         assertEquals(emptySet<String>(), DataReset.ALL.toSet() intersect DataReset.KEPT.toSet())
-        assertEquals(setOf("voiceEnabled", "recordingPaused", "voiceStatus"), DataReset.KEPT.toSet())
+        assertEquals(setOf("voiceEnabled", "voiceReviewEnabled", "recordingPaused", "voiceStatus"), DataReset.KEPT.toSet())
     }
 
     @Test

@@ -4,6 +4,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CoachEngineTest {
+    private fun stopped(engine:CoachEngine){for(i in 0..8)engine.sample(20000+i*250L,0f)}
+    @Test fun parkToDriveKeepsTheObservedStopWithoutProducingAdviceWhileParked(){
+        val engine=CoachEngine()
+        for(i in 0..8)engine.observeStopped(20000+i*250L)
+        for(i in 1..8)assertNull(engine.sample(22000+i*250L,i*.75f))
+    }
+    @Test fun moderateAccelerationImmediatelyAfterAnObservedStopGetsAnAllowance(){
+        val engine=CoachEngine();stopped(engine)
+        for(i in 1..8)assertNull(engine.sample(22000+i*250L,i*.75f))
+    }
+    @Test fun veryAbruptDepartureIsStillCoached(){
+        val engine=CoachEngine();stopped(engine)
+        val kinds=(1..6).mapNotNull{engine.sample(22000+it*250L,it*1.25f)?.kind}
+        assertEquals(listOf("acceleration"),kinds)
+    }
+    @Test fun departureAllowanceDoesNotHideBraking(){
+        val engine=CoachEngine();stopped(engine)
+        for(i in 1..8)engine.sample(22000+i*250L,i*.75f)
+        val kinds=(1..8).mapNotNull{engine.sample(24000+it*250L,(6-it*1.0f).coerceAtLeast(0f))?.kind}
+        assertTrue(kinds.contains("deceleration"))
+    }
     @Test fun decelerationRequiresAnObservationWindow() {
         val engine=CoachEngine()
         assertNull(engine.sample(20000,20f))

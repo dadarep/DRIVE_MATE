@@ -7,12 +7,12 @@ import android.content.SharedPreferences
  * DataResetTest scans the sources, so a newly stored key fails the build until it is listed here.
  */
 object DataReset {
-    val LAST_TRIP = listOf("lastSessionId", "lastCount", "lastMoments", "lastContexts", "lastGapMs", "lastInsufficient", "lastInterrupted", "lastRoute")
+    val LAST_TRIP = listOf("lastSessionId", "lastCount", "lastMoments", "lastContexts", "lastGapMs", "lastInsufficient", "lastInterrupted", "lastRoute", "lastReminder", "pendingVoiceReview", "voiceReviewAskedSession", "voiceReviewStatus")
 
     val ALL = LAST_TRIP + listOf(
         "garden", "gardenBroken", "sessions", "reviewed", "goalDraft",
         "destinationName", "destinationLat", "destinationLon",
-        "pendingCount", "pendingSamples", "pendingGapMs", "sessionStart", "pendingMoments", "pendingRoute", "pendingSessionId", "recording",
+        "pendingSeatbeltWarning", "pendingRapidAcceleration", "pendingCount", "pendingSamples", "pendingGapMs", "sessionStart", "pendingMoments", "pendingRoute", "pendingSessionId", "recording",
         "liveLat", "liveLon", "locationAt", "bearing", "liveSpeed", "signalAt", "vehicleState", "gearLabel",
         "navDestination", "navLat", "navLon", "navDistance", "navSeconds", "navAt", "navStatus", "navInstruction",
         "turnDistance", "thenInstruction", "thenDistance", "tbtAt",
@@ -22,7 +22,7 @@ object DataReset {
     )
 
     /** Preferences, not records: voice on/off, the recording pause choice and the voice engine status. */
-    val KEPT = listOf("voiceEnabled", "recordingPaused", "voiceStatus")
+    val KEPT = listOf("voiceEnabled", "voiceReviewEnabled", "recordingPaused", "voiceStatus")
 
     fun wipeAll(storage: SharedPreferences): Boolean = storage.edit().apply { ALL.forEach { remove(it) } }.commit()
 }

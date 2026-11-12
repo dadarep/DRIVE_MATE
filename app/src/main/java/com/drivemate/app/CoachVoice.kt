@@ -19,15 +19,22 @@ class CoachVoice(context:Context) {
     private val handler=Handler(Looper.getMainLooper())
     private var ready=false
     private var closed=false
-    private val onLoss:()->Unit={runCatching{tts.stop()}}
-    private fun finished(){handler.post{CoachAudio.releaseSoon()}}
+    private var completion: ((Boolean)->Unit)?=null
+    private var speaking=false
+    private val speechTimeout=Runnable{finishSpeech(false)}
+    private fun finishSpeech(success:Boolean){
+        handler.removeCallbacks(speechTimeout);speaking=false
+        val done=completion;completion=null;CoachAudio.releaseSoon();done?.invoke(success)
+    }
+    private val onLoss:()->Unit={stop()}
+    private fun finished(success:Boolean){handler.post{finishSpeech(success)}}
     private val events=object:EventListener {
         override fun onStart(){prefs.edit().putString("voiceStatus","재생 중").apply();Log.i("DriveMateVoice","playback started")}
         override fun onReady()=Unit
-        override fun onDone(){prefs.edit().putString("voiceStatus","준비됨").apply();Log.i("DriveMateVoice","playback completed");finished()}
-        override fun onStop(){prefs.edit().putString("voiceStatus","준비됨").apply();finished()}
+        override fun onDone(){prefs.edit().putString("voiceStatus","준비됨").apply();Log.i("DriveMateVoice","playback completed");finished(true)}
+        override fun onStop(){prefs.edit().putString("voiceStatus","준비됨").apply();finished(false)}
         override fun onUpdatedRms(rms:Double)=Unit
-        override fun onError(errorType:ErrorType){prefs.edit().putString("voiceStatus","음성 연결 확인").apply();Log.w("DriveMateVoice","$errorType");finished()}
+        override fun onError(errorType:ErrorType){prefs.edit().putString("voiceStatus","음성 연결 확인").apply();Log.w("DriveMateVoice","$errorType");finished(false)}
     }
     fun start(){
         prefs.edit().putString("voiceStatus","준비 중").apply()
@@ -45,11 +52,14 @@ class CoachVoice(context:Context) {
         }) }.onFailure {prefs.edit().putString("voiceStatus","음성 연결 확인").apply();Log.w("DriveMateVoice","initialize",it)}
     }
     // Focus is held up to 10s and released early when playback ends.
-    fun speak(text:String){
-        if(!ready||closed||!prefs.getBoolean("voiceEnabled",false))return
-        if(!CoachAudio.hold(app,10000)){Log.i("DriveMateVoice","skipped without focus");return}
-        runCatching {tts.speak(text)}.onFailure{Log.w("DriveMateVoice","speak",it);CoachAudio.abandon()}
+    fun speak(text:String,onComplete:((Boolean)->Unit)?=null): Boolean {
+        if(!ready||closed||speaking||!prefs.getBoolean("voiceEnabled",false))return false
+        if(!CoachAudio.hold(app,10000)){Log.i("DriveMateVoice","skipped without focus");return false}
+        speaking=true;completion=onComplete
+        val accepted=runCatching {tts.speak(text)}.onFailure{Log.w("DriveMateVoice","speak",it);CoachAudio.abandon()}.isSuccess
+        if(accepted)handler.postDelayed(speechTimeout,15000) else {speaking=false;completion=null}
+        return accepted
     }
-    fun stop(){runCatching{tts.stop()};CoachAudio.abandon()}
-    fun close(){closed=true;ready=false;CoachAudio.removeLossListener(onLoss);runCatching{tts.stop();tts.removeEventListener(events);tts.release()};CoachAudio.abandon()}
+    fun stop(){runCatching{tts.stop()};finishSpeech(false);CoachAudio.abandon()}
+    fun close(){closed=true;ready=false;handler.removeCallbacksAndMessages(null);completion=null;speaking=false;CoachAudio.removeLossListener(onLoss);runCatching{tts.stop();tts.removeEventListener(events);tts.release()};CoachAudio.abandon()}
 }

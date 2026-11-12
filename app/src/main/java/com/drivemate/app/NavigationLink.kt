@@ -41,8 +41,8 @@ class NavigationLink(context: Context) {
             prefs.edit().putString("navInstruction",next.description).putFloat("turnDistance",next.distance.toFloat()).putLong("tbtAt",android.os.SystemClock.elapsedRealtime())
                 .apply { if (then != null) putString("thenInstruction",then.description).putFloat("thenDistance",then.distance.toFloat()) else remove("thenInstruction") }.apply()
         }
-        override fun onRoutingCompleted() { guiding = true; prefs.edit().putString("navStatus","Pleos 경로 안내 연결됨").apply(); refresh() }
-        override fun onRouteStarted(routeStartInfo: RouteStartInfo) { guiding = true; refresh() }
+        override fun onRoutingCompleted() { if(!guiding)return; prefs.edit().putString("navStatus","Pleos 경로 안내 연결됨").apply(); refresh() }
+        override fun onRouteStarted(routeStartInfo: RouteStartInfo) { if(guiding) refresh() }
         override fun onDestinationChanged() { refresh() }
         override fun onRouteCancelled() { prefs.edit().putString("navStatus","Pleos 안내 종료").remove("navInstruction").remove("speedLimit").apply() }
         override fun onDestinationArrived(destinationArrivedInfo: DestinationArrivedInfo) { prefs.edit().putString("navStatus","목적지에 도착했어요").remove("navInstruction").apply() }
@@ -53,7 +53,7 @@ class NavigationLink(context: Context) {
             .onFailure { prefs.edit().putString("navStatus","Pleos 내비 연결 대기").apply(); Log.w("DriveMateNavi","initialize",it) }
         handler.postDelayed({ if (!closed) refresh() },2000)
     }
-    private fun refresh() { if (active && !closed) runCatching { helper.getDestinationInfo(); helper.getTBTInfo() }.onFailure { Log.w("DriveMateNavi","query",it) } }
+    private fun refresh() { if (active && !closed && guiding) runCatching { helper.getDestinationInfo(); helper.getTBTInfo() }.onFailure { Log.w("DriveMateNavi","query",it) } }
     fun navigate(destination: Destination): Boolean = runCatching {
         check(active)
         guiding = true
@@ -62,8 +62,12 @@ class NavigationLink(context: Context) {
         true
     }.getOrElse { prefs.edit().putString("navStatus","Pleos 목적지 전달 실패").apply(); false }
     fun cancel() {
-        guiding = false
         if(active) runCatching { helper.cancelRoute() }
+        forget()
+    }
+    /** Drop cached provider guidance without changing the external navigation app. */
+    fun forget() {
+        guiding = false
         prefs.edit().apply { listOf("navDestination","navLat","navLon","navDistance","navSeconds","navAt","navStatus","navInstruction","turnDistance","thenInstruction","thenDistance","tbtAt","speedLimit").forEach { remove(it) } }.apply()
     }
     fun close() { closed=true; handler.removeCallbacksAndMessages(null); if(active)runCatching { helper.removeListener(listener); helper.release() }; active=false }

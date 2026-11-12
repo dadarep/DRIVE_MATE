@@ -32,6 +32,14 @@ object CoachAudio {
     fun addLossListener(listener: () -> Unit) { lossListeners += listener }
     fun removeLossListener(listener: () -> Unit) { lossListeners -= listener }
 
+    fun priorityBusy(context:Context,includeAssistant:Boolean=true): Boolean {
+        val audio=context.applicationContext.getSystemService(AudioManager::class.java)?:return true
+        if(audio.mode in listOf(AudioManager.MODE_IN_CALL,AudioManager.MODE_IN_COMMUNICATION,AudioManager.MODE_RINGTONE))return true
+        return runCatching{audio.activePlaybackConfigurations.any{
+            it.audioAttributes.usage in yieldTo && (includeAssistant || it.audioAttributes.usage!=AudioAttributes.USAGE_ASSISTANT)
+        }}.getOrDefault(true)
+    }
+
     /** Holds focus for [ms] from now, requesting it first if needed. Returns false when playback must be skipped. */
     fun hold(context: Context, ms: Long): Boolean {
         val audio = manager ?: context.applicationContext.getSystemService(AudioManager::class.java).also { manager = it } ?: return false

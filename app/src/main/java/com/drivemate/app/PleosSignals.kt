@@ -6,6 +6,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import ai.pleos.playground.vehicle.Vehicle
+import ai.pleos.playground.vehicle.api.model.area.SeatArea
+import ai.pleos.playground.vehicle.constant.area.SeatValue
 
 /** Public, read-only SDK calls. Failed capabilities remain unknown, never zero. */
 class PleosSignals(context: Context) {
@@ -15,6 +17,12 @@ class PleosSignals(context: Context) {
     private var brakeSupported = false
     private var turnSupported = false
     private var angleSupported = false
+    private var seatbeltSupported = false
+    private val driverSeat = SeatArea(SeatValue.ROW_1_LEFT)
+    private var seatbeltAt = 0L
+    private var seatbeltValue: Boolean? = null
+    val seatbeltWarning: Boolean?
+        get() = seatbeltValue.takeIf { SystemClock.elapsedRealtime()-seatbeltAt <= 2500 }
     var brake: Boolean? = null; private set
     var turn: String? = null; private set
     var angle: Float? = null; private set
@@ -29,6 +37,11 @@ class PleosSignals(context: Context) {
     private fun check() {
         if (closed) return
         runCatching {
+            vehicle.getSafety().checkSeatNotBuckledWarningCapabilities(
+                onComplete = { _, areas ->
+                    seatbeltSupported = areas.any { SeatValue.ROW_1_LEFT in it.values }
+                    Log.i("DriveMateSignals", "seatbelt warning supported=$seatbeltSupported")
+                }, onFailed = { failed("seatbelt capability", it) })
             vehicle.getBrake().checkBrakePedalStatusCapabilities(
                 onComplete = { config -> brakeSupported = true; Log.i("DriveMateSignals", "brake capability=$config") },
                 onFailed = { failed("brake capability", it) })
@@ -45,6 +58,9 @@ class PleosSignals(context: Context) {
         override fun run() {
             if (closed) return
             runCatching {
+                if (seatbeltSupported) vehicle.getSafety().hasSeatBeltNotBuckledWarning(driverSeat,
+                    onComplete = { seatbeltValue=it;seatbeltAt=SystemClock.elapsedRealtime() },
+                    onFailed = { seatbeltValue=null;seatbeltSupported=false;failed("seatbelt read",it) })
                 if (brakeSupported) vehicle.getBrake().getCurrentBrakePedalStatus(
                     onComplete = { brake = it; brakeAt = SystemClock.elapsedRealtime() },
                     onFailed = { brake = null; failed("brake read", it) })

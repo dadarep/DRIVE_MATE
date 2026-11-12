@@ -77,7 +77,10 @@ class MainActivity : Activity() {
     private var routeMessage="목적지를 선택하면 도로 경로를 보여 드려요."
     private var routeVersion=0
     private var lastNavDestination=""
+    private var reviewVoiceRequested=false
+    private var voiceReviewHint:TextView?=null
     private var pendingRoute=false
+    private var routeFromLastKnown=false
     private var dialog:AlertDialog?=null
     // Notifications only show the recording/paused state; Android 13+ hides even the service notice without this grant.
     private val permissions=arrayOf("android.car.permission.CAR_SPEED",android.Manifest.permission.ACCESS_COARSE_LOCATION,android.Manifest.permission.ACCESS_FINE_LOCATION)+
@@ -216,16 +219,10 @@ class MainActivity : Activity() {
         root.addView(right,LinearLayout.LayoutParams(0,-1,1f).apply{leftMargin=dp(20)})
         setContentView(root)
     }
-    private var reclaimUntil=0L
-    // Pleos brings its navigation app to the front when a route is cancelled; clearing or deleting should keep the driver here.
-    private fun cancelNavigation(){reclaimUntil=SystemClock.elapsedRealtime()+3000;navigation.cancel()}
-    override fun onTopResumedActivityChanged(top:Boolean){
-        super.onTopResumedActivityChanged(top)
-        if(!top&&SystemClock.elapsedRealtime()<reclaimUntil){reclaimUntil=0;startActivity(Intent(this,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))}
-    }
+    private fun forgetNavigation(){navigation.forget()}
     private fun clearRoute(){
         if(!canEdit())return
-        routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());cancelNavigation()
+        routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());forgetNavigation()
         storage.edit().remove("destinationLat").remove("destinationLon").remove("destinationName").apply()
         map.recenter();routeMessage="목적지를 선택하면 도로 경로를 보여 드려요.";update()
     }
@@ -322,14 +319,17 @@ class MainActivity : Activity() {
     private fun errorText()=text("",20f,if(night)Color.rgb(255,128,128) else Color.rgb(200,40,40)).apply{setPadding(dp(8),dp(14),dp(8),0);visibility=View.GONE;setLineSpacing(dp(4).toFloat(),1f)}
     private fun showError(view:TextView,message:String){view.text="⚠ $message";view.visibility=View.VISIBLE}
     private fun select(d:Destination){
-        selected=d;roadRoute=null;map.setDestination(d);map.setRoute(emptyList());map.fit()
+        routeVersion++;selected=d;roadRoute=null;map.setDestination(d);map.setRoute(emptyList());map.fit()
         storage.edit().putString("destinationName",d.name).putString("destinationLat",d.point.lat.toString()).putString("destinationLon",d.point.lon.toString()).apply()
-        navigation.navigate(d);pendingRoute=true;requestRoadRoute();update()
+        navigation.forget();pendingRoute=true;requestRoadRoute();update()
         earcons.play(Earcons.Cue.DESTINATION)
     }
     private fun requestRoadRoute(){
         val destination=selected?:return
-        val from=map.current?:run {routeMessage="현재 위치 수신 후 경로를 탐색해요.";return}
+        val live=map.current
+        val from=live ?: recentRouteOrigin(storage.getString("liveLat",null),storage.getString("liveLon",null),storage.getLong("locationAt",0),SystemClock.elapsedRealtime())
+            ?: run {routeMessage="현재 위치 수신 후 경로를 탐색해요.";return}
+        routeFromLastKnown=live==null
         pendingRoute=false;routeFailed=false;val version=++routeVersion;routeMessage="도로 경로 탐색 중…"
         MapData.io.execute{val result=runCatching{MapData.route(from,destination.point)};runOnUiThread{
             if(version!=routeVersion||isDestroyed)return@runOnUiThread
@@ -371,15 +371,19 @@ class MainActivity : Activity() {
         signals.visibility=if(locked)View.GONE else View.VISIBLE
         if(!parked) {dialog?.dismiss();dialog=null}
         if(storage.contains("liveLat")&& now-storage.getLong("locationAt",0) in 0..15000){
-            map.locate(GeoPoint(storage.getString("liveLat","0")!!.toDouble(),storage.getString("liveLon","0")!!.toDouble()),storage.getFloat("bearing",0f))
-            if(pendingRoute)requestRoadRoute()
+            map.locate(GeoPoint(storage.getString("liveLat","0")!!.toDouble(),storage.getString("liveLon","0")!!.toDouble()),if(storage.contains("bearing"))storage.getFloat("bearing",0f) else null)
+            if(routeFromLastKnown)pendingRoute=true
         } else map.locate(null)
-        val navName=storage.getString("navDestination","")?:""
-        val navLat=storage.getString("navLat",null)?.toDoubleOrNull();val navLon=storage.getString("navLon",null)?.toDoubleOrNull()
-        if(navName.isNotBlank()&&navLat!=null&&navLon!=null&&"$navName/$navLat/$navLon"!=lastNavDestination){
-            lastNavDestination="$navName/$navLat/$navLon"
-            if(selected==null||selected!!.name!=navName){selected=Destination(navName,GeoPoint(navLat,navLon));map.setDestination(selected);pendingRoute=true}
+        if(pendingRoute)requestRoadRoute()
+        val reviewVoiceStatus=storage.getString("voiceReviewStatus","")?:""
+        voiceReviewHint?.text=reviewVoiceStatus
+        if(reviewVoiceRequested && reviewVoiceStatus.startsWith("회고 완료")){
+            reviewVoiceRequested=false
+            handler.post{if(confirmedParked() && dialog?.isShowing==true){dialog?.dismiss();review()}}
         }
+        val navLat=storage.getString("navLat",null)?.toDoubleOrNull();val navLon=storage.getString("navLon",null)?.toDoubleOrNull()
+        // The in-app destination is authoritative; native callbacks never replace it.
+        val nativeMatches=matchesNativeDestination(selected,navLat,navLon)
         val tripDone=parked&&storage.getInt("sessions",0)>0&&!storage.getBoolean("reviewed",true)
         val lastCount=storage.getInt("lastCount",0)
         val activeGoal=garden().goal
@@ -392,9 +396,11 @@ class MainActivity : Activity() {
         coachDetail.text=when{noSpeed->"차속을 받아야 주행을 기록할 수 있어요. 이 카드를 눌러 권한을 요청해요.";!signalFresh->"연결이 확인되면 주행 기록을 이어가요.";tripDone->tripSummary(lastCount);paused&&parked->"속도·위치를 기록하지 않아요. 설정에서 다시 켤 수 있어요.";paused->"속도·위치를 기록하지 않아요. 주차 후 설정에서 다시 켤 수 있어요.";parked&&goalPending->if(goalDue)"주행 회고에서 어땠는지 답하면 첫 잎이 돋아요." else "이번 주행의 연습 목표예요. 주차 후 어땠는지 돌아봐요.";parked->"출발하면 속도 변화를 기록하고, 주차 후 함께 돌아봐요.";else->"목적지 변경과 회고는 주차 후 열려요."}
         val accent=if(parked)blue else muted
         coachAccent.setColor(accent);coachLabel.setTextColor(if(accent==blue)accentText else accent)
+        if(locked && reviewVoiceStatus.startsWith("질문 중"))coachDetail.text="짧게 물어볼게요. 답하기 어렵다면 나중에라고 말해 주세요."
+        if(locked && reviewVoiceStatus.startsWith("듣는 중"))coachDetail.text="듣고 있어요. 잘됐어, 어려웠어, 나중에로 답해 주세요."
         coachLabel.text=when{noSpeed->"권한 필요";tripDone&&paused->"주행 완료 · 기록 중지";tripDone->"주행 완료";paused->"기록 중지";parked&&goalPending->if(goalDue)"🌱 돌아볼 목표" else "🌱 오늘의 연습 목표";driving->"기록 중";else->"드라이빙 정원"}
         coachCard.isClickable=noSpeed||tripDone||(parked&&goalPending)
-        val instruction=storage.getString("navInstruction",null)?.takeIf{it.isNotBlank()&&selected!=null&&now-storage.getLong("tbtAt",0) in 0..30000}
+        val instruction=storage.getString("navInstruction",null)?.takeIf{it.isNotBlank()&&nativeMatches&&now-storage.getLong("tbtAt",0) in 0..30000}
         routeBanner.visibility=if(instruction!=null&&!locked)View.VISIBLE else View.GONE
         if(instruction!=null){
             routeTitle.text=instruction;maneuverIcon.text=maneuverGlyph(instruction)
@@ -406,7 +412,8 @@ class MainActivity : Activity() {
         }
         overview.visibility=if(selected!=null)View.VISIBLE else View.GONE
         // Map tools are hidden while driving, so a view panned while parked must not strand the car off screen.
-        if(locked&&!wasLocked){if(map.route.isEmpty())map.recenter() else map.fit()}
+        if(locked&&!wasLocked)map.recenter()
+        if(!locked&&wasLocked&&selected!=null)map.fit()
         wasLocked=locked
         val sessions=storage.getInt("sessions",0)
         // The preview was measured from the old start; after a trip it is re-measured from where the car parked.
@@ -415,9 +422,9 @@ class MainActivity : Activity() {
         map.interactive=!locked
         voice.visibility=if(locked)View.GONE else View.VISIBLE
         updateChips(signalFresh,driving)
-        val navStatus=storage.getString("navStatus","")?.takeIf{it.isNotBlank()&&selected!=null}
+        val navStatus=storage.getString("navStatus","")?.takeIf{it.isNotBlank()&&nativeMatches}
         routeDetail.text=navStatus?:"";routeDetail.visibility=if(navStatus!=null&&!locked)View.VISIBLE else View.GONE
-        val nativeRemaining=selected!=null && navName==selected?.name && now-storage.getLong("navAt",0) in 0..15000 && storage.getInt("navDistance",-1)>=0
+        val nativeRemaining=nativeMatches && now-storage.getLong("navAt",0) in 0..15000 && storage.getInt("navDistance",-1)>=0
         val (remainMeters,remainSeconds,source)=when{
             nativeRemaining->Triple(storage.getInt("navDistance",0).toDouble(),storage.getInt("navSeconds",0).toDouble(),"남음")
             roadRoute!=null->Triple(roadRoute!!.meters,roadRoute!!.seconds,"남음 · 미리보기")
@@ -426,8 +433,9 @@ class MainActivity : Activity() {
         if(selected!=null&&remainSeconds>=0){
             val eta=SimpleDateFormat("a h:mm",Locale.KOREAN).format(Date(System.currentTimeMillis()+(remainSeconds*1000).toLong()))
             tripLabel.text="목적지 · ${selected!!.name}"
-            tripTitle.text="🏁 $eta 도착"
-            tripDetail.text="${"%.1f".format(remainMeters/1000)}km · ${ceil(remainSeconds/60).toInt()}분 $source"
+            tripTitle.text=if(routeFromLastKnown && !nativeRemaining)selected!!.name else "🏁 $eta 도착"
+            tripDetail.text=if(routeFromLastKnown && !nativeRemaining) "${"%.1f".format(remainMeters/1000)}km · 약 ${ceil(remainSeconds/60).toInt()}분\n최근 확인 위치 기준 · 미리보기"
+                else "${"%.1f".format(remainMeters/1000)}km · ${ceil(remainSeconds/60).toInt()}분 $source"
         }else{
             tripLabel.text="목적지"
             tripTitle.text=selected?.name?:if(driving)"자유 주행 중" else "어디로 떠나볼까요?"
@@ -499,6 +507,7 @@ class MainActivity : Activity() {
         val message=when{g.due(sessions)->"어떤 답이든 회고를 마치면 첫 잎이 돋아요.";justRewarded->"지난 목표를 돌아본 기록이 정원에 남았어요. 어려웠던 날도 솔직하게 돌아보면 잎이 자라요.";else->null}
         sheet(title,message,scroll=true){
             stats(sessions,g)
+            storage.getString("lastReminder",null)?.takeIf{it.isNotBlank()}?.let { note("다음 운전, 기억할 한 가지\n$it") }
             moments()
             when{
                 g.due(sessions)->responses(g,sessions,trip)
@@ -560,6 +569,17 @@ class MainActivity : Activity() {
     private fun LinearLayout.responses(g:Garden,sessions:Int,trip:String){
         val goal=g.goal!!
         goalBlock("지난 목표",goal.text,"필요한 감속을 했다고 해서 잎이 줄지 않아요.")
+        addView(button("🎙 말로 회고하기"){
+            if(canEdit()){
+                if(!storage.getBoolean("voiceEnabled",false))Toast.makeText(this@MainActivity,"메인 화면에서 음성을 켠 뒤 이용해 주세요.",Toast.LENGTH_SHORT).show()
+                else {
+                    reviewVoiceRequested=true
+                    storage.edit().putBoolean("voiceReviewEnabled",true).apply()
+                    startService(Intent(this@MainActivity,DriveRecorder::class.java).setAction("VOICE_REVIEW"))
+                }
+            }
+        },LinearLayout.LayoutParams(-1,dp(76)).apply{topMargin=dp(16)})
+        voiceReviewHint=text(storage.getString("voiceReviewStatus","")?:"",20f,muted).also{addView(it)}
         val buttons=mutableListOf<TextView>()
         val row=LinearLayout(this@MainActivity).apply{setPadding(0,dp(24),0,0)}
         listOf("DIFFICULT" to "어려웠어요","GOOD" to "잘됐어요").forEachIndexed{i,(code,label)->
@@ -643,6 +663,17 @@ class MainActivity : Activity() {
                 startService(Intent(this@MainActivity,DriveRecorder::class.java).setAction(if(paused)"RESUME" else "PAUSE"))
                 dialog?.dismiss();update();settings()
             },LinearLayout.LayoutParams(-1,dp(76)).apply{topMargin=dp(16)})
+            addView(section("음성 회고",28))
+            val voiceReviewOn=storage.getBoolean("voiceReviewEnabled",false)
+            note("켜두면 안정적인 주행 구간이나 목적지 근처에서 한 번 짧게 물어봐요. 질문 뒤에 잘됐어, 어려웠어, 나중에로 답해 주세요. 답변은 주차 후 반영해요.")
+            addView(button(if(voiceReviewOn)"주행 중 음성 회고 끄기" else "주행 중 음성 회고 켜기",!voiceReviewOn){
+                if(canEdit()){
+                    storage.edit().putBoolean("voiceReviewEnabled",!voiceReviewOn).apply()
+                    if(voiceReviewOn)startService(Intent(this@MainActivity,DriveRecorder::class.java).setAction("VOICE_REVIEW_STOP"))
+                    dialog?.dismiss();settings()
+                }
+            },LinearLayout.LayoutParams(-1,dp(76)).apply{topMargin=dp(16)})
+            note("한국어를 기기 안에서 인식하고, 답변을 받는 잠깐 동안만 마이크를 사용해요. 원음과 인식 문장은 저장하지 않아요. 음성 안내가 꺼져 있으면 자동으로 묻지 않아요.")
             addView(section("권한",28))
             note("차속 · ${if(granted("android.car.permission.CAR_SPEED"))"허용됨" else "허용 안 됨"} · 주행 기록에 꼭 필요해요")
             note("위치 · ${if(granted(android.Manifest.permission.ACCESS_FINE_LOCATION))"허용됨" else "허용 안 됨"} · 지도와 경로를 기기 안에서 그릴 때만 써요(선택)")
@@ -652,7 +683,7 @@ class MainActivity : Activity() {
             choice("기록 삭제","최근 주행 기록 또는 전체 데이터를 지워요"){if(canEdit()){dialog?.dismiss();deleteMenu()}}
             addView(section("수집 목적·지도 출처",16))
             note("주행 경로·급감속 후보·목표·회고는 이 기기에만 저장하고 앱 서버로 보내지 않아요.")
-            note("지도 타일 © OpenStreetMap contributors · 장소 검색 Photon(검색어와 약 1km 단위 위치) · 경로 미리보기 OSRM(출발·도착 좌표)")
+            note("벡터 지도 OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors · 장소 검색 Photon(검색어와 약 1km 단위 위치) · 경로 미리보기 OSRM(출발·도착 좌표)")
             note("버전 ${packageManager.getPackageInfo(packageName,0).versionName}")
         }
     }
@@ -666,17 +697,22 @@ class MainActivity : Activity() {
         sheet(if(all)"전체 데이터를 삭제할까요?" else "최근 주행 기록을 삭제할까요?","삭제하면 되돌릴 수 없어요.",primary="삭제",cancel="취소",onPrimary={s->
             if(!canEdit())return@sheet
             s.primary?.isEnabled=false
-            if(all)cancelNavigation()
+            if(all)forgetNavigation()
             val ok=if(all)DataReset.wipeAll(storage) else {
                 val sessions=storage.getInt("sessions",0)
                 saveGarden(garden().withoutSession(tripId(sessions),max(0,sessions-1))){putInt("sessions",max(0,sessions-1));putBoolean("reviewed",true);lastTripKeys.forEach{remove(it)}}
             }
             if(!ok){s.primary?.isEnabled=true;return@sheet}
-            if(all){routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());lastNavDestination="";routeMessage="목적지를 선택하면 도로 경로를 보여 드려요."}
+            if(all){routeVersion++;pendingRoute=false;routeFailed=false;selected=null;roadRoute=null;map.setDestination(null);map.setRoute(emptyList());routeMessage="목적지를 선택하면 도로 경로를 보여 드려요."}
             s.dialog.dismiss();Toast.makeText(this,if(all)"전체 데이터를 삭제했어요." else "최근 주행 기록을 삭제했어요.",Toast.LENGTH_SHORT).show();update()
         })
     }
     private val lastTripKeys=DataReset.LAST_TRIP
     private fun dp(value:Int)=(value*resources.displayMetrics.density).roundToInt()
-    override fun onDestroy(){handler.removeCallbacksAndMessages(null);dialog?.dismiss();if(::navigation.isInitialized)navigation.close();super.onDestroy()}
+    override fun onStart(){super.onStart();if(::map.isInitialized)map.start()}
+    override fun onResume(){super.onResume();if(::map.isInitialized)map.resume()}
+    override fun onPause(){if(::map.isInitialized)map.pause();super.onPause()}
+    override fun onStop(){if(::map.isInitialized)map.stop();super.onStop()}
+    override fun onLowMemory(){super.onLowMemory();if(::map.isInitialized)map.lowMemory()}
+    override fun onDestroy(){handler.removeCallbacksAndMessages(null);dialog?.dismiss();if(::map.isInitialized)map.destroy();if(::navigation.isInitialized)navigation.close();super.onDestroy()}
 }

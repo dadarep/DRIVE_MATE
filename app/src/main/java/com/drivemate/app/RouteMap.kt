@@ -1,179 +1,280 @@
 package com.drivemate.app
 
 import android.content.Context
-import android.graphics.*
-import android.util.LruCache
-import android.view.GestureDetector
-import android.view.MotionEvent
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.Gravity
 import android.view.View
-import java.io.File
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.*
-import org.json.JSONArray
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
+import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapLibreMapOptions
+import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory.visibility
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.LineString
+import org.maplibre.geojson.Point
+import kotlin.math.roundToInt
 
-class RouteMap(context: Context) : View(context) {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private var center = GeoPoint(37.499, 127.029)
-    private var zoom = 16
-    private var follow = true
+/** MapLibre owns projection and tile drawing; only observed GPS is used for the vehicle marker. */
+class RouteMap(context: Context) : FrameLayout(context) {
+    private val handler = Handler(Looper.getMainLooper())
+    private val camera = MapCameraPolicy()
+    private val nativeView: MapView
+    private var map: MapLibreMap? = null
+    private var style: Style? = null
+    private var roadsVisible = false
+    private var failed = false
+    private var destroyed = false
+    private var started = false
+    private var resumed = false
+    private var loadGeneration = 0
+    private var lastState = "도로 지도 연결 중"
+    private var heading = 0f
+    private var headingKnown = false
+    private var lastRoadCheck = 0L
+    private var pendingCamera = true
+    private val notice: LinearLayout
+    private val noticeText: TextView
+    private val reload: TextView
+    private val credit: TextView
     var current: GeoPoint? = null; private set
     var destination: Destination? = null; private set
     var route: List<GeoPoint> = emptyList(); private set
     var onPick: ((GeoPoint) -> Unit)? = null
     var tileState: ((String) -> Unit)? = null
-    private var heading = 0f
-    private val u = max(1.5f, context.resources.displayMetrics.density)
-    private val tileSize = 256.0 * u
-    private val tiles = object : LruCache<String, Bitmap>(24 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap) = value.byteCount / 1024
-    }
-    private val pending = ConcurrentHashMap.newKeySet<String>()
-    private val failedAt = ConcurrentHashMap<String, Long>()
-    private val cacheDir = File(context.cacheDir, "osm-map-tiles").apply { mkdirs() }
-    private var detached = false
-    private val roads = runCatching {
-        val data = JSONArray(context.assets.open("gangnam-roads.json").bufferedReader().use { it.readText() })
-        List(data.length()) { i -> val r = data.getJSONObject(i); val points = r.getJSONArray("points")
-            r.getBoolean("major") to List(points.length()) { j -> val p = points.getJSONArray(j); GeoPoint(p.getDouble(1),p.getDouble(0)) }
-        }
-    }.getOrDefault(emptyList())
-    private val sortedRoads = roads.sortedBy { it.first }
-    private val tileRect = RectF()
-    private val shape = Path()
-    private val line = Path()
-    private val credit = "© OpenStreetMap contributors · 경로 OSRM"
-    init { contentDescription = "도로 지도. 현재 위치와 목적지, 탐색된 경로 표시" }
-    private val gesture = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent) = true
-        override fun onScroll(a: MotionEvent?, b: MotionEvent, dx: Float, dy: Float): Boolean {
-            follow = false; val p = world(center); center = geo(p.first + dx, p.second + dy)
-            invalidate(); return true
-        }
-        override fun onDoubleTap(e: MotionEvent): Boolean { zoomBy(1); return true }
-        override fun onLongPress(e: MotionEvent) {
-            val p = world(center); onPick?.invoke(geo(p.first + e.x - width/2, p.second + e.y - height/2))
-        }
-    })
+        set(value) { field = value; value?.invoke(lastState) }
     var interactive = true
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!interactive) return false
-        if (event.actionMasked == MotionEvent.ACTION_UP && event.eventTime - event.downTime < android.view.ViewConfiguration.getTapTimeout()) performClick()
-        return gesture.onTouchEvent(event)
-    }
-    override fun performClick(): Boolean = super.performClick()
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); detached = false }
-    override fun onDetachedFromWindow() { detached = true; super.onDetachedFromWindow() }
-    fun locate(point: GeoPoint?, bearing: Float = 0f) {
-        current = point; heading = bearing
-        if (follow && point != null && route.isEmpty()) center = point
-        invalidate()
-    }
-    fun setDestination(value: Destination?) { destination = value; invalidate() }
+        set(value) {
+            if (field && !value) recenter()
+            field = value
+            map?.uiSettings?.setAllGesturesEnabled(value)
+            reload.visibility = if (value && failed) View.VISIBLE else View.GONE
+        }
+    var night = false
+        set(value) {
+            if (field == value) return
+            field = value
+            updateColors()
+            if (map != null) loadStyle()
+        }
     var preview: GeoPoint? = null
-        set(value) { field = value; invalidate() }
-    fun setRoute(points: List<GeoPoint>) { route = points; fit(); invalidate() }
-    fun recenter() { follow = true; current?.let { center = it }; zoom = 16; invalidate() }
-    fun zoomBy(amount: Int) { zoom = (zoom + amount).coerceIn(10,18); follow = false; invalidate() }
-    private fun world(p: GeoPoint): Pair<Double,Double> {
-        val size = tileSize * (1 shl zoom); val s = sin(Math.toRadians(p.lat.coerceIn(-85.05,85.05)))
-        return (p.lon + 180)/360*size to (0.5 - ln((1+s)/(1-s))/(4*PI))*size
+        set(value) { field = value?.takeIf(::validMapPoint); updatePointSources() }
+
+    init {
+        contentDescription = "벡터 도로 지도 · 현재 위치 추적과 목적지 경로"
+        MapLibre.getInstance(context.applicationContext)
+        nativeView = MapView(context, MapLibreMapOptions.createFromAttributes(context)
+            .textureMode(true).compassEnabled(false).logoEnabled(false).attributionEnabled(false)
+            .setPrefetchesTiles(false).setPrefetchZoomDelta(0).localIdeographFontFamily("sans-serif"))
+        nativeView.onCreate(null)
+        addView(nativeView, LayoutParams(-1, -1))
+        notice = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            setPadding(dp(24), dp(18), dp(24), dp(18))
+        }
+        noticeText = TextView(context).apply { textSize = 20f; gravity = Gravity.CENTER; text = "도로 지도를 불러오는 중…" }
+        notice.addView(noticeText)
+        reload = TextView(context).apply {
+            text = "지도 다시 불러오기"; textSize = 20f; gravity = Gravity.CENTER
+            setPadding(dp(18), dp(14), dp(18), dp(14)); visibility = View.GONE
+            isClickable = true; isFocusable = true
+            setOnClickListener { if (interactive) loadStyle() }
+        }
+        notice.addView(reload, LinearLayout.LayoutParams(-2, dp(64)).apply { topMargin = dp(12) })
+        addView(notice, LayoutParams(-2, -2, Gravity.CENTER).apply { leftMargin = dp(20); rightMargin = dp(130) })
+        credit = TextView(context).apply {
+            text = "OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors"
+            textSize = 12f; gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8)); maxLines = 2
+            contentDescription = "지도 출처 · OpenFreeMap, OpenMapTiles, OpenStreetMap"
+            setOnClickListener {
+                if (interactive) context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://openfreemap.org/")))
+            }
+        }
+        addView(credit, LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.RIGHT))
+        updateColors()
+        nativeView.addOnDidFailLoadingMapListener { if (!destroyed) showFailure() }
+        nativeView.addOnDidFinishRenderingMapListener { _ ->
+            val now = SystemClock.elapsedRealtime()
+            if (!destroyed && style != null && width > 0 && height > 0 && now-lastRoadCheck>500) {
+                lastRoadCheck = now
+                val count = map?.queryRenderedFeatures(RectF(0f, 0f, width.toFloat(), height.toFloat()), *DriveMapStyle.roads)?.size ?: 0
+                if (count > 0 && !roadsVisible) {
+                    roadsVisible = true; failed = false; notice.visibility = View.GONE
+                    publish("벡터 도로 지도 · ${if(camera.following) "현재 위치 추적" else "전체 / 둘러보기"}")
+                    showOverlays(true)
+                }
+            }
+        }
+        nativeView.getMapAsync { ready ->
+            if (!destroyed) {
+                map = ready
+                ready.setMinZoomPreference(3.0); ready.setMaxZoomPreference(19.0)
+                ready.uiSettings.setAllGesturesEnabled(interactive)
+                ready.addOnCameraMoveStartedListener { reason ->
+                    if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE && interactive) {
+                        camera.gesture(); publish("벡터 도로 지도 · 둘러보기")
+                    }
+                }
+                ready.addOnMapLongClickListener { latLng ->
+                    if (interactive) onPick?.invoke(GeoPoint(latLng.latitude, latLng.longitude))
+                    interactive
+                }
+                val start = current ?: destination?.point ?: GeoPoint(37.499, 127.029)
+                ready.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(start.latLng()).zoom(15.5).build()))
+                loadStyle()
+            }
+        }
     }
-    private fun geo(x: Double,y: Double): GeoPoint {
-        val size=tileSize*(1 shl zoom)
-        return GeoPoint(Math.toDegrees(atan(sinh(PI*(1-2*y/size)))),x/size*360-180)
+    private fun updateColors() {
+        setBackgroundColor(if(night) Color.rgb(23,35,46) else Color.rgb(240,241,237))
+        notice.background = GradientDrawable().apply { setColor(if(night) Color.rgb(27,39,51) else Color.WHITE); cornerRadius = dp(20).toFloat() }
+        noticeText.setTextColor(if(night) Color.rgb(233,241,249) else Color.rgb(34,55,73))
+        reload.setTextColor(if(night) Color.rgb(143,183,255) else Color.rgb(40,104,236))
+        credit.setTextColor(if(night) Color.rgb(196,210,222) else Color.rgb(76,95,110))
+        credit.setBackgroundColor(if(night) Color.argb(235,23,35,46) else Color.argb(235,255,255,255))
     }
-    private fun position(p: GeoPoint): Pair<Float,Float> {
-        val c=world(center); val v=world(p)
-        return (v.first-c.first+width/2).toFloat() to (v.second-c.second+height/2).toFloat()
+    private fun publish(value: String) { lastState = value; tileState?.invoke(value) }
+    private fun loadStyle() {
+        val ready = map ?: return
+        if (destroyed) return
+        val generation = ++loadGeneration
+        style = null; roadsVisible = false; failed = false
+        notice.visibility = View.VISIBLE; noticeText.text = "도로 지도를 불러오는 중…"; reload.visibility = View.GONE
+        publish("벡터 도로 지도 연결 중")
+        ready.setStyle(Style.Builder().fromJson(DriveMapStyle.json(night))) { loaded ->
+            if (!destroyed && generation == loadGeneration) {
+                loaded.addImage("vehicle-arrow", vehicleBitmap())
+                loaded.addImage("route-direction", directionBitmap())
+                style = loaded; updateRouteSource(); updatePointSources(); applyCamera(false)
+            }
+        }
+        handler.postDelayed({ if (!destroyed && generation == loadGeneration && !roadsVisible) showFailure() }, 18000)
     }
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        if (destination != null) fit()
+    private fun showFailure() {
+        failed = true; roadsVisible = false; showOverlays(false)
+        noticeText.text = "도로 지도를 확인하지 못했어요.\n인터넷 연결을 확인해 주세요."
+        notice.visibility = View.VISIBLE; reload.visibility = if (interactive) View.VISIBLE else View.GONE
+        publish("지도 연결 확인 필요")
+    }
+    private fun showOverlays(show: Boolean) {
+        for (id in DriveMapStyle.overlays) style?.getLayer(id)?.setProperties(visibility(if(show) Property.VISIBLE else Property.NONE))
+    }
+    fun locate(point: GeoPoint?, bearing: Float? = null) {
+        val next = point?.takeIf(::validMapPoint)
+        val known=bearing != null && bearing.isFinite()
+        val direction = if (known) ((bearing!! % 360f) + 360f) % 360f else heading
+        if (next == current && direction == heading && known == headingKnown) return
+        headingKnown=known
+        current = next; heading = direction
+        updatePointSources()
+        if (camera.following && next != null) applyCamera(true)
+    }
+    fun setDestination(value: Destination?) {
+        destination = value?.takeIf { validMapPoint(it.point) }
+        updatePointSources()
+    }
+    fun setRoute(points: List<GeoPoint>) {
+        route = points.filter(::validMapPoint)
+        updateRouteSource()
+        if (interactive) fit() else recenter()
+    }
+    fun recenter() {
+        camera.recenter(); pendingCamera = true; applyCamera(true)
+        if(roadsVisible) publish("벡터 도로 지도 · 현재 위치 추적")
+    }
+    fun zoomBy(amount: Int) {
+        val ready = map ?: return
+        if (!interactive) return
+        camera.gesture()
+        ready.animateCamera(CameraUpdateFactory.zoomTo((ready.cameraPosition.zoom + amount).coerceIn(3.0,19.0)), 300)
+        publish("벡터 도로 지도 · 둘러보기")
     }
     fun fit() {
-        val points = route.ifEmpty { listOfNotNull(current,destination?.point) }
-        if (width == 0) return
-        if (points.size < 2) { destination?.let { center = it.point; zoom = 15; follow = false; invalidate() }; return }
-        center = GeoPoint((points.minOf { it.lat }+points.maxOf { it.lat })/2,(points.minOf { it.lon }+points.maxOf { it.lon })/2)
-        zoom=17
-        while (zoom > 10) {
-            val a=world(GeoPoint(points.minOf{it.lat},points.minOf{it.lon})); val b=world(GeoPoint(points.maxOf{it.lat},points.maxOf{it.lon}))
-            if (abs(a.first-b.first)<width*0.65 && abs(a.second-b.second)<height*0.50) break
-            zoom--
-        }
-        if (zoom == 10) destination?.let { center = it.point; zoom = 14 }
-        follow=false
+        camera.overview(); pendingCamera = true; applyCamera(true)
+        if(roadsVisible) publish("벡터 도로 지도 · 전체 경로")
     }
-    private fun tile(z:Int,x:Int,y:Int): Bitmap? {
-        if (x !in 0 until (1 shl z) || y !in 0 until (1 shl z)) return null
-        val key="$z-$x-$y"; tiles.get(key)?.let{return it}
-        if (System.currentTimeMillis()-(failedAt[key]?:0L)<30000 || !pending.add(key)) return null
-        MapData.io.execute {
-            val result=runCatching {
-                val file=File(cacheDir,"$key.png")
-                val bytes=if(file.exists()) file.readBytes() else MapData.request("https://tile.openstreetmap.org/$z/$x/$y.png").also{file.writeBytes(it)}
-                BitmapFactory.decodeByteArray(bytes,0,bytes.size) ?: error("지도 이미지 형식 오류")
+    private fun applyCamera(animate: Boolean) {
+        val ready = map ?: return
+        if (style == null || width <= 0 || height <= 0 || destroyed) { pendingCamera = true; return }
+        val update = if (camera.following && current != null) {
+            CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(current!!.latLng()).zoom(camera.zoom())
+                .bearing(heading.toDouble()).tilt(35.0).padding(0.0, height * 0.30, 0.0, 0.0).build())
+        } else {
+            val points = overviewPoints(route, current, destination?.point)
+            if (points.size < 2) {
+                CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target((points.firstOrNull() ?: GeoPoint(37.499,127.029)).latLng())
+                    .zoom(15.5).bearing(0.0).tilt(0.0).padding(0.0,0.0,0.0,0.0).build())
+            } else {
+                ready.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().bearing(0.0).tilt(0.0).padding(0.0,0.0,0.0,0.0).build()))
+                val bounds = LatLngBounds.Builder().includes(points.map { it.latLng() }).build()
+                CameraUpdateFactory.newLatLngBounds(bounds, dp(44), minOf(dp(190),height/5), minOf(dp(144),width/4), minOf(dp(78),height/5))
             }
-            result.onSuccess { tiles.put(key,it) }.onFailure { failedAt[key]=System.currentTimeMillis() }
-            pending.remove(key)
-            post { if (!detached) { tileState?.invoke(if(result.isSuccess) "지도 연결됨" else "지도 연결 확인 · 저장된 도로 표시"); invalidate() } }
-        }; return null
+        }
+        pendingCamera = false
+        if (animate) ready.animateCamera(update, 450) else ready.moveCamera(update)
     }
-    var night = false
-        set(value) { field = value; invalidate() }
-    private val nightTiles = ColorMatrixColorFilter(ColorMatrix(floatArrayOf(-1f,0f,0f,0f,255f, 0f,-1f,0f,0f,255f, 0f,0f,-1f,0f,255f, 0f,0f,0f,1f,0f)).apply {
-        postConcat(ColorMatrix(floatArrayOf(-0.574f,1.43f,0.144f,0f,0f, 0.426f,0.43f,0.144f,0f,0f, 0.426f,1.43f,-0.856f,0f,0f, 0f,0f,0f,1f,0f)))
-        postConcat(ColorMatrix().apply { setScale(0.85f,0.88f,0.95f,1f) })
-    })
-    override fun onDraw(c:Canvas) {
-        super.onDraw(c); c.drawColor(if(night) Color.rgb(30,36,44) else Color.rgb(235,239,239))
-        for((major,points) in sortedRoads) {
-            paint.style=Paint.Style.STROKE; paint.strokeWidth=(if(major) 9f else 4f)*u
-            paint.color=if(night) (if(major) Color.rgb(120,100,60) else Color.rgb(70,78,90)) else if(major) Color.rgb(246,218,158) else Color.WHITE
-            c.drawPath(path(points),paint)
-        }
-        paint.style=Paint.Style.FILL; paint.isFilterBitmap=true
-        paint.colorFilter=if(night) nightTiles else null
-        val w=world(center);val left=w.first-width/2;val top=w.second-height/2
-        for(x in floor(left/tileSize).toInt()..floor((left+width)/tileSize).toInt()) for(y in floor(top/tileSize).toInt()..floor((top+height)/tileSize).toInt()) {
-            tile(zoom,x,y)?.let{tileRect.set((x*tileSize-left).toFloat(),(y*tileSize-top).toFloat(),(x*tileSize-left+tileSize).toFloat(),(y*tileSize-top+tileSize).toFloat());c.drawBitmap(it,null,tileRect,paint)}
-        }
-        paint.colorFilter=null
-        if(route.size>1) {
-            paint.style=Paint.Style.STROKE;paint.strokeCap=Paint.Cap.ROUND;paint.strokeJoin=Paint.Join.ROUND
-            paint.strokeWidth=11f*u;paint.color=if(night) Color.rgb(12,16,22) else Color.WHITE;c.drawPath(path(route),paint)
-            paint.strokeWidth=7f*u;paint.color=if(night) Color.rgb(90,145,255) else Color.rgb(31,96,247);c.drawPath(path(route),paint);paint.style=Paint.Style.FILL
-        }
-        destination?.let { d ->
-            val(x,y)=position(d.point);paint.color=Color.rgb(241,79,79);c.drawCircle(x,y-14*u,12*u,paint)
-            c.drawPath(pin(x,y),paint)
-            paint.color=Color.WHITE;c.drawCircle(x,y-14*u,4*u,paint)
-            paint.textSize=16f*u;paint.typeface=Typeface.DEFAULT_BOLD
-            val label=d.name.take(18);val tw=paint.measureText(label)
-            paint.color=if(night) Color.rgb(27,33,43) else Color.WHITE
-            paint.setShadowLayer(4*u,0f,u,Color.argb(60,0,0,0))
-            c.drawRoundRect(x-tw/2-12*u,y-62*u,x+tw/2+12*u,y-32*u,10*u,10*u,paint)
-            paint.clearShadowLayer()
-            paint.color=if(night) Color.rgb(236,240,246) else Color.rgb(49,59,76);c.drawText(label,x-tw/2,y-41*u,paint)
-        }
-        preview?.let { p ->
-            val(x,y)=position(p);paint.color=Color.argb(60,31,96,247);c.drawCircle(x,y,24*u,paint)
-            paint.color=Color.rgb(31,96,247);c.drawCircle(x,y-14*u,12*u,paint)
-            c.drawPath(pin(x,y),paint)
-            paint.color=Color.WHITE;c.drawCircle(x,y-14*u,4*u,paint)
-        }
-        current?.let { p ->
-            val(x,y)=position(p);paint.color=Color.argb(35,35,100,255);c.drawCircle(x,y,29*u,paint)
-            paint.color=Color.WHITE;c.drawCircle(x,y,17*u,paint)
-            c.save();c.rotate(heading,x,y);paint.color=Color.rgb(31,96,247)
-            shape.reset();shape.moveTo(x,y-12*u);shape.lineTo(x+9*u,y+9*u);shape.lineTo(x,y+5*u);shape.lineTo(x-9*u,y+9*u);shape.close()
-            c.drawPath(shape,paint);c.restore()
-        }
-        paint.typeface=Typeface.DEFAULT;paint.textSize=9f*u;paint.color=if(night) Color.argb(210,27,33,43) else Color.argb(210,255,255,255)
-        val cw=paint.measureText(credit)
-        c.drawRect(width-cw-16*u,height-16*u,width.toFloat(),height.toFloat(),paint);paint.color=if(night) Color.rgb(162,174,190) else Color.rgb(91,104,115)
-        c.drawText(credit,width-cw-8*u,height-5*u,paint)
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w,h,oldw,oldh)
+        if (w > 0 && h > 0) post { if (!destroyed) applyCamera(false) }
     }
-    private fun pin(x:Float,y:Float)=shape.apply { reset();moveTo(x-8*u,y-7*u);lineTo(x,y+5*u);lineTo(x+8*u,y-7*u);close() }
-    private fun path(points:List<GeoPoint>)=line.apply { reset();points.forEachIndexed { i,p -> val(x,y)=position(p);if(i==0)moveTo(x,y)else lineTo(x,y) } }
+    private fun updateRouteSource() {
+        val features = if (route.distinct().size >= 2) listOf(Feature.fromGeometry(LineString.fromLngLats(route.map { it.geo() }))) else emptyList()
+        style?.getSourceAs<GeoJsonSource>("route-data")?.setGeoJson(FeatureCollection.fromFeatures(features))
+    }
+    private fun updatePointSources() {
+        fun pointSource(id: String, p: GeoPoint?, edit: (Feature) -> Unit = {}) {
+            val features = p?.let { listOf(Feature.fromGeometry(it.geo()).also(edit)) } ?: emptyList()
+            style?.getSourceAs<GeoJsonSource>(id)?.setGeoJson(FeatureCollection.fromFeatures(features))
+        }
+        pointSource("destination-data",destination?.point) { it.addStringProperty("name",destination!!.name) }
+        pointSource("position-data",current) { it.addNumberProperty("bearing",heading);it.addBooleanProperty("headingKnown",headingKnown) }
+        pointSource("selection-data",preview)
+    }
+    fun start() { if (!destroyed && !started) { nativeView.onStart(); started=true } }
+    fun resume() { if (!destroyed && !resumed) { start(); nativeView.onResume(); resumed=true } }
+    fun pause() { if (!destroyed && resumed) { nativeView.onPause(); resumed=false } }
+    fun stop() { pause(); if (!destroyed && started) { nativeView.onStop(); started=false } }
+    fun lowMemory() { if(!destroyed) nativeView.onLowMemory() }
+    fun saveState(out: Bundle) { if(!destroyed) nativeView.onSaveInstanceState(out) }
+    fun destroy() {
+        if(destroyed)return
+        stop(); destroyed=true; handler.removeCallbacksAndMessages(null); tileState=null; onPick=null; nativeView.onDestroy(); map=null; style=null
+    }
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
+    private fun GeoPoint.latLng() = LatLng(lat,lon)
+    private fun GeoPoint.geo() = Point.fromLngLat(lon,lat)
+    private fun vehicleBitmap(): Bitmap = Bitmap.createBitmap(80,80,Bitmap.Config.ARGB_8888).also { bitmap ->
+        val canvas=Canvas(bitmap); val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.color=Color.WHITE; canvas.drawCircle(40f,40f,32f,paint)
+        paint.color=Color.rgb(40,104,236)
+        canvas.drawPath(Path().apply { moveTo(40f,13f);lineTo(62f,61f);lineTo(40f,51f);lineTo(18f,61f);close() },paint)
+    }
+    private fun directionBitmap(): Bitmap = Bitmap.createBitmap(28,32,Bitmap.Config.ARGB_8888).also { bitmap ->
+        val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Color.WHITE;style=Paint.Style.STROKE;strokeWidth=4f;strokeCap=Paint.Cap.ROUND;strokeJoin=Paint.Join.ROUND }
+        // Line-placement symbols use the image's right edge as forward, unlike the vehicle's north-up icon.
+        Canvas(bitmap).drawPath(Path().apply { moveTo(9f,8f);lineTo(18f,16f);lineTo(9f,24f) },paint)
+    }
 }

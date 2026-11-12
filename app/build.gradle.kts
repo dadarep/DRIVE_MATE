@@ -21,9 +21,11 @@ kotlin { jvmToolchain(17) }
 
 
 dependencies {
+ implementation("org.maplibre.gl:android-sdk:12.3.1")
  implementation("ai.pleos.playground:Vehicle:2.3.2")
  implementation("ai.pleos.playground:NaviHelper:3.0.5")
  implementation("ai.pleos.playground:TextToSpeech:3.3.1")
+ implementation("ai.pleos.playground:SpeechToText:3.3.1")
  constraints {
   // Pleos TextToSpeech pulls JNA 5.13.0 via universal-access; its x86_64 library is not 16 KB aligned, 5.16.0+ is.
   implementation("net.java.dev.jna:jna:5.17.0")
