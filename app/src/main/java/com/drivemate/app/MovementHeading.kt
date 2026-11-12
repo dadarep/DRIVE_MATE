@@ -3,10 +3,10 @@ package com.drivemate.app
 import kotlin.math.*
 
 /** Course over ground, never a guessed north heading or a route-to-destination bearing. */
-internal class MovementHeading {
+internal class MovementHeading(initial: Float? = null) {
     private var anchor: GeoPoint? = null
     private var anchorAt = 0L
-    var heading: Float? = null; private set
+    var heading: Float? = initial?.takeIf { it.isFinite() }?.let { ((it%360)+360)%360 }; private set
 
     fun sample(point: GeoPoint, at: Long, accuracy: Float, speed: Float?, providerBearing: Float?): Float? {
         if (!validMapPoint(point) || !accuracy.isFinite() || accuracy > 50 || at <= anchorAt) return heading

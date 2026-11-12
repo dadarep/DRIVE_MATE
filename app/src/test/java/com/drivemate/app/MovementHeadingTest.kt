@@ -27,4 +27,11 @@ class MovementHeadingTest {
         assertNull(h.sample(GeoPoint(37.5,127.00001),2000,5f,2f,null))
         assertEquals(90f,h.sample(GeoPoint(37.5,127.00006),3000,5f,2f,null)!!,0.1f)
     }
+    @Test fun restoredCourseHoldsWhileParkedAndYieldsToRealMovement() {
+        val h=MovementHeading(-90f)
+        assertEquals(270f,h.sample(GeoPoint(37.5,127.0),1000,3f,0f,null)!!,0.1f)
+        h.sample(GeoPoint(37.5,127.0),2000,3f,10f,null)
+        assertEquals(0f,h.sample(GeoPoint(37.50012,127.0),3000,3f,10f,null)!!,0.1f)
+        assertNull(MovementHeading(Float.NaN).heading)
+    }
 }

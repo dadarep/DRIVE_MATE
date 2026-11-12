@@ -26,7 +26,7 @@ import android.util.Log
 class DriveRecorder : Service() {
     private lateinit var extra: com.drivemate.app.PleosSignals
     private val coach = com.drivemate.app.CoachEngine()
-    private val movementHeading = com.drivemate.app.MovementHeading()
+    private var movementHeading = com.drivemate.app.MovementHeading()
     private var seatbeltWarning = false
     private var rapidAcceleration = false
     private lateinit var voice: com.drivemate.app.CoachVoice
@@ -100,9 +100,10 @@ class DriveRecorder : Service() {
         } else {
             startForeground(1, notification)
         }
+        // A parked car keeps facing the same way, so the last course survives a service restart.
+        movementHeading = com.drivemate.app.MovementHeading(if(storage.contains("bearing")) storage.getFloat("bearing",Float.NaN) else null)
         locations = getSystemService(LocationManager::class.java)
         if (!paused()) startLocation()
-        storage.edit().remove("bearing").apply()
         recording = storage.getBoolean("recording", false)
         seatbeltWarning=storage.getBoolean("pendingSeatbeltWarning",false)
         rapidAcceleration=storage.getBoolean("pendingRapidAcceleration",false)

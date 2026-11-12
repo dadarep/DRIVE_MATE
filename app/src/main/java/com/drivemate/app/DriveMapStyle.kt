@@ -8,7 +8,7 @@ internal object DriveMapStyle {
     const val tiles = "https://tiles.openfreemap.org/planet/latest"
     const val glyphs = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf"
     val roads = arrayOf("street", "arterial", "motorway")
-    val overlays = arrayOf("route-outline", "route-line", "route-directions", "destination-dot", "destination-label", "selection-dot", "position-halo", "position-arrow")
+    val overlays = arrayOf("route-outline", "route-line", "route-directions", "destination-dot", "destination-label", "selection-dot", "position-halo", "position-dot", "position-arrow")
     fun json(night: Boolean): String {
         val sources = JSONObject().put("basemap", JSONObject().put("type", "vector").put("url", tiles))
         for (id in listOf("route-data", "destination-data", "position-data", "selection-data")) {
@@ -64,6 +64,7 @@ internal object DriveMapStyle {
             layout="""{"text-field":["get","name"],"text-font":["Noto Sans Regular"],"text-size":19,"text-offset":[0,-1.9],"text-anchor":"bottom","text-max-width":12,"text-allow-overlap":true}""", source="destination-data")
         add("selection-dot", "circle", """{"circle-radius":11,"circle-color":"#2868EC","circle-stroke-width":4,"circle-stroke-color":"#FFFFFF"}""", source="selection-data")
         add("position-halo", "circle", """{"circle-radius":27,"circle-color":"#2868EC","circle-opacity":0.16}""", source="position-data")
+        add("position-dot", "circle", """{"circle-radius":10,"circle-color":"#2868EC","circle-stroke-width":4,"circle-stroke-color":"#FFFFFF","circle-opacity":["case",["get","headingKnown"],0,1],"circle-stroke-opacity":["case",["get","headingKnown"],0,1]}""", source="position-data")
         add("position-arrow", "symbol", """{"icon-opacity":["case",["get","headingKnown"],1,0]}""", layout="""{"icon-image":"vehicle-arrow","icon-size":0.8,"icon-rotate":["get","bearing"],"icon-rotation-alignment":"map","icon-pitch-alignment":"viewport","icon-allow-overlap":true,"icon-ignore-placement":true}""", source="position-data")
         return JSONObject().put("version",8).put("name","DRIVE MATE · Road focus").put("glyphs",glyphs).put("sources",sources).put("layers",layers).toString()
     }
