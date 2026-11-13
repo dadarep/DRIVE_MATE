@@ -1,10 +1,22 @@
-# DRIVE MATE · Pleos prototype
+# DRIVE MATE (v0.1.0)
 
-지도 중심 차량 코칭 앱. 기존 정원 캐릭터와 주행 회고 데이터를 유지한다.
+낯선 길 앞에서 망설이는 운전자와 동행하고, 새싹을 키우는 재미로 안전운전 연습과 회고를 이어가게 돕는 Pleos Connect(AAOS) 차량용 앱 프로토타입입니다.
 
-## 실행
+## 개발 및 실행 환경
 
-JDK 17, Android SDK 36, Pleos Connect API 34 에뮬레이터가 필요하다.
+- **플랫폼**: Android Automotive OS (Pleos Connect API 34 에뮬레이터 기준, `minSdk 28`, `targetSdk 34`, `compileSdk 36`)
+- **언어 / 빌드**: Kotlin 2.1.20, JDK 17, Gradle 8.14.3
+- **사용 SDK 및 라이브러리**:
+  - Android Car API (`CarPropertyManager`, `CarUxRestrictionsManager`)
+  - Pleos Vehicle SDK `2.3.2`
+  - Pleos NaviHelper SDK `3.0.5`
+  - Pleos TextToSpeech SDK `3.3.1` (`ON_DEVICE` 한국어 음성 안내)
+  - Pleos SpeechToText SDK `3.3.1` (`ON_DEVICE` 선택형 음성 회고)
+  - MapLibre Native Android `12.3.1` (OpenFreeMap 벡터 타일, Photon 장소 검색, OSRM 도로 경로 미리보기)
+
+## 빌드 및 설치 방법
+
+저장소의 `release/DRIVE_MATE-0.1.0-debug.apk`를 바로 설치하거나, 아래 명령으로 직접 빌드할 수 있습니다.
 
 ```powershell
 .\gradlew.bat assembleDebug testDebugUnitTest lintDebug
@@ -12,67 +24,28 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.drivemate.app/.MainActivity
 ```
 
-## 현재 동작
+## 주요 구현 기능
 
-- AAOS 차량 속도·기어 + GPS 위치를 수신한다.
-- Pleos Vehicle 2.3.2의 공개 Capability/Get API로 브레이크 눌림 상태, 방향지시등, 조향각을 읽는다. 차량 제어 API는 호출하지 않는다.
-- 약 1초 차속 변화로 가감속을 관찰하고, 수신 가능한 브레이크·조향·방향지시등·내비 제한속도를 함께 사용한다. 신호 누락은 0이 아닌 미수신으로 다룬다.
-- 한국어 Pleos TextToSpeech 3.3.1 ON_DEVICE 모드로 짧은 코칭을 재생한다. 음성 버튼으로 켜기/끄기 가능하다.
-- 목적지 선택, Photon 장소 검색, 좌표 입력, 지도 길게 누르기를 지원한다. 입력과 상세 회고는 P단·정지·UX 제한 해제 상태에서만 열린다.
-- 목적지 변경·해제는 DRIVE_MATE 내부 지도와 OSRM 경로 미리보기에만 적용한다. 기본 Pleos 내비게이션으로 자동 전환하거나 목적지를 전송하지 않는다. NaviHelper 3.0.5의 수신 정보는 현재 앱 목적지 좌표와 일치할 때만 표시한다.
-- 지도는 MapLibre Native와 OpenFreeMap 벡터 타일을 사용하며, 자체 지도 위 파란 경로는 OSRM 도로 경로 미리보기다. 직선을 실제 도로 경로처럼 표시하지 않는다. 도로 지도 로드 실패 시 연결 안내와 재시도를 표시하고 지도 없는 경로·차량 표시는 숨긴다.
-- 기존 주행 회고, 목표 씨앗/잎 데이터를 유지한다.
+- **차량 신호 수집 및 주차 게이트 (`DriveRecorder`)**
+  - `PERF_VEHICLE_SPEED`, `GEAR_SELECTION` 및 `CarUxRestrictionsManager`를 연동하여 주행/주차 상태를 판별합니다.
+  - P단·속도 0.05m/s 미만·UX 제한 해제가 2초 연속 확인될 때만 상세 회고·목표 입력·설정 화면을 엽니다. 회고 도중 재출발 시 입력 화면을 즉시 닫습니다.
+- **주행 관찰 및 급감속 후보 기록 (`CoachEngine`, `TripQuality`)**
+  - 약 250ms 간격 차속 표본에서 연속 속도 감소량(1.5m/s 이상)과 감속도(3.0m/s² 이상)가 함께 충족될 때 돌아볼 후보로 기록합니다.
+  - 신호 결측 구간은 계산에서 분리하며, 후보 0건과 확인 구간 부족을 구분해 안내합니다.
+- **도착 한 줄 리마인더 (`TripReminder`, `CoachVoice`)**
+  - 유효 주차 확정 후 안전벨트 미착용 경고(`CAR_SAFETY`), 급감속 후보, 급가속 관찰 여부를 바탕으로 다음 운전에서 기억할 한 문장을 화면과 한국어 TTS(`ON_DEVICE`)로 안내합니다.
+- **선택형 짧은 음성 회고 (`VoiceReflection`, `VoiceReviewPolicy`)**
+  - 음성 안내와 음성 회고를 모두 켠 경우, 안정 주행 조건 및 NaviHelper 회전 안내(TBT)·조향·제동·오디오 포커스 조건을 확인해 주행당 최대 1회 목표 회고를 묻습니다.
+  - 주행 중 응답(`잘됐어` / `어려웠어` / `나중에`)은 임시 저장하며, 주차 확정 후 목표·주행 세션을 대조해 반영합니다.
+- **목표 씨앗 저장 및 새싹(첫 잎) 성장 (`Garden`)**
+  - 다음 연습 목표를 저장하면 씨앗이 심어지고, 이후 완료한 새 주행에서 해당 목표를 회고하면(`잘됐어요` / `어려웠어요` 모두 동일) 첫 잎이 지급됩니다.
+  - 목표·회고·보상을 단일 JSON으로 원자 저장해 중복 보상을 방지합니다.
+- **벡터 지도 및 경로 미리보기 (`RouteMap`, `DriveMapStyle`, `MapData`)**
+  - MapLibre + OpenFreeMap 기반 주간/야간 벡터 지도와 OSRM 도로 경로 미리보기, 주행 방향(구면 방위각) 추적을 제공합니다.
+- **사용자 통제 및 데이터 초기화 (`DataReset`)**
+  - 주차 중 기록 일시중지/재개, 음성 안내 및 주행 중 음성 회고 개별 ON/OFF, 최근 기록 삭제 및 전체 데이터 초기화를 지원합니다.
 
-## 확인된 환경
+## 에뮬레이터 시연 보조 도구
 
-`DriveMate_Pleos_API34`, Vehicle Service 2.3.22에서 다음 값을 직접 수신했다:
-
-| 데이터 | 실제 응답 |
-|---|---|
-| 차속 / 기어 | 0.0 m/s / P |
-| 브레이크 | false |
-| 방향지시등 | OFF |
-| 조향각 | 0.0° (지원 범위 -470..500°) |
-| 위치 | GPS 좌표 업데이트 |
-| 목적지 | 42dot 목적지 콜백 |
-| 회전 안내 | Pleos TBT 응답 |
-| 음성 | ON_DEVICE 한국어(ko-KR) 초기화 및 재생 시작/완료 콜백 확인 |
-
-Android `CAR_EXTERIOR_LIGHTS`·`READ_CAR_STEERING`의 거부 결과는 Pleos 전용 공개 SDK의 지원 여부를 뜻하지 않는다. 두 경로의 권한은 다르다.
-
-## 공개 자료
-
-- https://github.com/Pleos-Playground/pleos-sample-vehicle-app
-- https://github.com/Pleos-Playground/pleos-sample-navi-app
-- https://github.com/Pleos-Playground/pleos-sample-fusedlocation-app
-- https://document.pleos.ai/docs/pleos-only/connect-sdk-pleos/
-- https://github.com/komoot/photon
-- https://project-osrm.org/
-- https://operations.osmfoundation.org/policies/tiles/
-
-SDK 공개 인터페이스와 초기화/해제·capability·callback 패턴을 참고해 앱에 맞게 구현했다. 다른 참가자의 비공개 코드나 비공개 API를 사용하지 않는다.
-
-## 범위와 제한
-
-코칭 임계값은 프로토타입 휴리스틱이며 안전운전 인증이나 사고 위험 판정이 아니다. 급감속은 주변 상황상 필요한 행동일 수 있다. 차선·앞차·보행자 감지 기능은 없다. 기본 Pleos 차량 화면과 중복되던 앱 내부 차량 시각화는 제거했고 지도·코칭이 앱 영역 전체를 사용한다.
-
-## Pleos 조작 콘솔
-
-에뮬레이터 실행 후 `adb forward tcp:18088 tcp:8088`을 실행하면 PC 브라우저에서 http://127.0.0.1:18088/ 로 접속할 수 있다. 페이지 접속 성공과 실제 차량 제어 브리지 연결 여부는 별개다. 에뮬레이터/ADB 재시작 후에는 포트 연결을 다시 실행한다.
-
-지도/장소 검색/OSRM은 공개 온라인 서비스를 사용하는 개발용 구성으로 가용성 보장이 없다. 장소 검색어와 위치, 경로 탐색용 출발/도착 좌표는 각 서비스로 전송된다. 벡터 지도에는 화면 영역에 해당하는 타일과 글꼴이 요청되며 MapLibre의 캐시를 사용한다. 지도 제공자는 OpenFreeMap이고 지도 데이터는 OpenMapTiles / OpenStreetMap이다. 배포 전 상용 트래픽에 맞는 공급자·서비스 정책과 권한 승인을 검토해야 한다.
-
-코칭 계산 단위 테스트 5개, APK 빌드, Android lintDebug가 통과했다(경고는 남아 있음). 주차 상태 실제 SDK 값, 목적지/TBT 연동, 도로 지도·OSRM 경로, Photon 장소 검색 결과, 한국어 음성 재생 완료를 확인했다. 가상 콘솔의 주행 제어 브리지가 503을 반환해 실제 가감속 신호를 주입하는 전체 주행 시나리오 검증은 남아 있다.
-
-
-## 벡터 지도 개선 (2026-11-12)
-
-[지도 변경 내용과 검증](docs/MAP_VECTOR_UPDATE.md)을 참고하세요.
-
-## 주행 종료 한 줄 안내와 방향 표시
-
-주행 후 P단·정지·UX 제한 해제가 확인되면 종료음 뒤에 다음 운전에서 기억할 한 문장을 한 번만 읽는다. 음성 끄기·기록 중지·중단된 주행에는 자동 안내하지 않는다. 같은 문장은 주행 회고에서도 볼 수 있다.
-
-안전벨트 미착용 경고를 실제로 수신한 경우 우선 안내하고, 그 외에는 이번 주행의 급감속 후보·빠른 가속을 참고한다. 신호가 없으면 미착용으로 추정하지 않는다. 현재 에뮬레이터의 안전벨트 경고 capability는 ERROR_NOT_SUPPORTED_PROPERTY로 확인됐다.
-
-지도 이동 방향은 연속 GPS 좌표로 계산하고, 신뢰 가능한 GPS 방향을 보조로 사용한다. 방향이 없으면 북쪽으로 가정하지 않고 위치 원으로 표시하며 정차 중에는 마지막 방향을 유지한다. 경로 진행 화살표도 선 배치 기준에 맞게 수정했다.
+- `tools/demo-data`: 에뮬레이터 내 시연용 샘플 상태 로드 및 원본 복원 스크립트
+- `tools/gps-simulation`: Pleos 조작 콘솔(`http://127.0.0.1:18088/`)의 차속·기어에 맞춰 도로 경로를 따라 에뮬레이터 GPS 좌표를 갱신하는 시뮬레이션 스크립트
