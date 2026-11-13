@@ -21,7 +21,7 @@ internal class CoachListener(context: Context) {
     private val timeout=Runnable{finish(null)}
     private val listener=object:ResultListener {
         override fun onReady()=Unit
-        override fun onStartedRecognition(){Log.i("DriveMateSTT","listening (ON_DEVICE)")}
+        override fun onStartedRecognition(){Log.i("DriveMateSTT","listening (ON_DEVICE)");handler.post{if(answer!=null){handler.removeCallbacks(timeout);handler.postDelayed(timeout,REPLY_MS)}}}
         override fun onUpdated(stt:String,completed:Boolean){if(completed)handler.post{finish(stt)}}
         override fun onUpdatedEpdData(on:Long,off:Long)=Unit
         override fun onUpdatedRms(rms:Double)=Unit
@@ -40,7 +40,7 @@ internal class CoachListener(context: Context) {
     fun listen(result:(String?)->Unit): Boolean {
         if(!ready||closed||answer!=null)return false
         answer=result
-        return runCatching{stt.request();handler.postDelayed(timeout,8000);true}.getOrElse{answer=null;Log.w("DriveMateSTT","request",it);false}
+        return runCatching{stt.request();handler.postDelayed(timeout,STARTUP_MS+REPLY_MS);true}.getOrElse{answer=null;Log.w("DriveMateSTT","request",it);false}
     }
     private fun finish(text:String?){
         val callback=answer?:return
@@ -48,4 +48,5 @@ internal class CoachListener(context: Context) {
     }
     fun cancel(){answer=null;handler.removeCallbacksAndMessages(null);runCatching{stt.stop()}}
     fun close(){closed=true;cancel();ready=false;runCatching{stt.removeListener(listener);stt.release()}}
+    private companion object { const val STARTUP_MS=12000L; const val REPLY_MS=8000L }
 }
