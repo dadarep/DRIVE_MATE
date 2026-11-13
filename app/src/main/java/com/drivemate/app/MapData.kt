@@ -20,14 +20,14 @@ object MapData {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = 12000
         connection.readTimeout = 15000
-        connection.setRequestProperty("User-Agent", "DriveMate-Pleos-Prototype/0.2 (Android vehicle coaching)")
+        connection.setRequestProperty("User-Agent", "DriveMate-Pleos-Prototype/0.1.0 (Android vehicle coaching)")
         try {
             check(connection.responseCode == 200) { "HTTP ${connection.responseCode}" }
             return connection.inputStream.use { it.readBytes() }
         } finally { connection.disconnect() }
     }
     fun route(from: GeoPoint, to: GeoPoint): RoadRoute {
-        val data = JSONObject(String(request("https://router.project-osrm.org/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson&steps=false"), Charsets.UTF_8))
+        val data = JSONObject(String(request("https://routing.openstreetmap.de/routed-car/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson&steps=false"), Charsets.UTF_8))
         check(data.optString("code") == "Ok") { "도로 경로를 찾지 못했어요" }
         val route = data.getJSONArray("routes").getJSONObject(0)
         val coords = route.getJSONObject("geometry").getJSONArray("coordinates")

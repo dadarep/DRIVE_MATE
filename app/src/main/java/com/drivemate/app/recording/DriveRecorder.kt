@@ -15,6 +15,7 @@ import android.car.Car
 import android.car.VehicleGear
 import android.car.VehiclePropertyIds
 import android.car.drivingstate.CarUxRestrictionsManager
+import android.car.drivingstate.CarUxRestrictions
 import android.car.hardware.property.CarPropertyManager
 import android.content.Intent
 import android.os.Handler
@@ -40,6 +41,10 @@ class DriveRecorder : Service() {
     private var car: Car? = null
     private var properties: CarPropertyManager? = null
     private var restrictions: CarUxRestrictionsManager? = null
+    @Volatile private var uxRestricted: Boolean? = null
+    private val uxListener = CarUxRestrictionsManager.OnUxRestrictionsChangedListener { value: CarUxRestrictions ->
+        uxRestricted = value.isRequiresDistractionOptimization
+    }
     private var recording = false
     private var candidates = 0
     private var previousSpeed: Float? = null
@@ -125,6 +130,8 @@ class DriveRecorder : Service() {
             car = Car.createCar(this)
             properties = car?.getCarManager(Car.PROPERTY_SERVICE) as? CarPropertyManager
             restrictions = car?.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as? CarUxRestrictionsManager
+            uxRestricted = restrictions?.currentCarUxRestrictions?.isRequiresDistractionOptimization
+            restrictions?.registerListener(uxListener)
         }.onFailure { Log.w("DriveMate", "차량 서비스 연결 실패", it) }
         handler.post(poll)
     }
@@ -287,6 +294,7 @@ class DriveRecorder : Service() {
         if (::voice.isInitialized) voice.close()
         publish("unknown")
         if (::locations.isInitialized) locations.removeUpdates(locationListener)
+        runCatching { restrictions?.unregisterListener() }
         car?.disconnect()
         super.onDestroy()
     }
@@ -305,9 +313,7 @@ class DriveRecorder : Service() {
         if(!paused() && locationNow-lastLocationRequest>=15000 && locationNow-storage.getLong("locationAt",0)>15000) startLocation()
         val speed = (read(VehiclePropertyIds.PERF_VEHICLE_SPEED) as? Float)?.takeIf { it.isFinite() }
         val gear = read(VehiclePropertyIds.GEAR_SELECTION) as? Int
-        val restricted = runCatching {
-            restrictions?.currentCarUxRestrictions?.isRequiresDistractionOptimization
-        }.getOrNull()
+        val restricted = uxRestricted
         if (speed == null || gear == null || restricted == null || signalLossSimulated()) {
             previousSpeed = null
             coach.reset();reviewTiming.reset();voiceReview.cancel()
