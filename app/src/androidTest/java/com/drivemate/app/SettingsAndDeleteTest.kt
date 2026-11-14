@@ -5,6 +5,9 @@ import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.BySelector
+import androidx.test.uiautomator.Direction
+import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import java.io.File
@@ -59,14 +62,23 @@ class SettingsAndDeleteTest {
         device.wait(Until.gone(By.text("닫기")), timeout)
     }
 
+    private fun scrollTo(selector: BySelector): UiObject2? {
+        repeat(8) {
+            device.findObject(selector)?.let { return it }
+            val scroller = device.findObject(By.scrollable(true)) ?: return null
+            if (!scroller.scroll(Direction.DOWN, 0.7f)) return device.findObject(selector)
+        }
+        return device.findObject(selector)
+    }
+
     @Test
     fun settingsShowsRecordingPermissionsDataAndSources() {
         openSettings()
         for (label in listOf("주행 기록", "권한", "데이터", "기록 삭제", "수집 목적·지도 출처")) {
-            assertNotNull("'$label' missing", device.wait(Until.findObject(By.text(label)), timeout))
+            assertNotNull("'$label' missing", scrollTo(By.text(label)))
         }
-        assertNotNull(device.findObject(By.textStartsWith("버전 ")))
-        assertNotNull(device.findObject(By.textStartsWith("지도 타일 © OpenStreetMap")))
+        assertNotNull(scrollTo(By.textStartsWith("벡터 지도 OpenFreeMap")))
+        assertNotNull(scrollTo(By.textStartsWith("버전 ")))
         closeSheet()
     }
 

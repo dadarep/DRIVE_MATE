@@ -1,5 +1,5 @@
 """PC-only demo: console speed -> road-route GPS; never edit app telemetry."""
-import bisect,json,math,os,subprocess,time,urllib.request
+import argparse,bisect,json,math,os,subprocess,time,urllib.request
 from pathlib import Path
 import xml.etree.ElementTree as ET
 ADB=Path(os.environ['LOCALAPPDATA'])/'Android/Sdk/platform-tools/adb.exe'
@@ -37,19 +37,37 @@ def road_route(current,target):
     lengths=[0.0]
     for a,b in zip(points,points[1:]):lengths.append(lengths[-1]+distance(a,b))
     return points,lengths
+def route_point(value):
+    try:
+        lat,lon=map(float,value.split(','))
+        if not (math.isfinite(lat) and math.isfinite(lon) and -85<=lat<=85 and -180<=lon<=180): raise ValueError()
+        return lon,lat
+    except (ValueError,TypeError):
+        raise argparse.ArgumentTypeError('Use latitude,longitude with latitude -85..85 and longitude -180..180')
+
 def main():
+    parser=argparse.ArgumentParser(description='Explicit emulator-only road-route GPS simulation')
+    parser.add_argument('--origin',type=route_point,help='latitude,longitude; supply with --destination for signed release APKs')
+    parser.add_argument('--destination',type=route_point,help='latitude,longitude; route must match the app destination')
+    args=parser.parse_args()
+    if (args.origin is None)!=(args.destination is None): parser.error('--origin and --destination must be supplied together')
+    fixed=args.origin is not None
     fd=os.open(PID,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
     with os.fdopen(fd,'w') as f:f.write(str(os.getpid()))
     STOP.unlink(missing_ok=True)
     log('START: explicit GPS simulation; no app preference or vehicle-control writes')
-    current=None;target=None;points=None;lengths=None;progress=0.0
+    current=args.origin;target=args.destination;points=None;lengths=None;progress=0.0
     last=time.monotonic();last_prefs=0;last_log=0;last_error=0;retry_at=0;paused=False;arrived=False
     try:
         adb('forward','tcp:18088','tcp:8088')
         while not STOP.exists():
             tick=time.monotonic()
             try:
-                if tick-last_prefs>=2:
+                if fixed and points is None and tick>=retry_at:
+                    retry_at=tick+30;points,lengths=road_route(current,target)
+                    log(f'ROUTE: {lengths[-1]:.0f}m; explicit release-compatible simulation, app preferences not accessed')
+                    last=time.monotonic()
+                if not fixed and tick-last_prefs>=2:
                     prefs=preferences();last_prefs=tick
                     paused=prefs.get('recordingPaused')=='true'
                     if current is None:current=(float(prefs['liveLon']),float(prefs['liveLat']))

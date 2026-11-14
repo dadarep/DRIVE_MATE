@@ -7,3 +7,6 @@ local.properties
 *.keystore
 
 __pycache__/
+
+# Keep signing credentials and local verification state private.
+*signing.properties

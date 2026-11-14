@@ -1,8 +1,35 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application") version "8.11.0"
     id("org.jetbrains.kotlin.android") version "2.1.20"
 }
+val drivemateReleaseFile = providers.environmentVariable("DRIVEMATE_SIGNING_PROPERTIES").orNull
+    ?.let { file(it) }
+    ?: file("${System.getProperty("user.home")}/.android/drivemate-release-signing.properties")
+val drivemateReleaseProperties = Properties().apply {
+    if (drivemateReleaseFile.isFile) drivemateReleaseFile.inputStream().use { load(it) }
+}
+
 android {
+    testBuildType = providers.gradleProperty("drivemateTestBuildType").getOrElse("debug")
+    signingConfigs {
+        if (drivemateReleaseFile.isFile) {
+            create("submissionRelease") {
+                storeFile = file(drivemateReleaseProperties.getProperty("storeFile"))
+                storePassword = drivemateReleaseProperties.getProperty("storePassword")
+                keyAlias = drivemateReleaseProperties.getProperty("keyAlias")
+                keyPassword = drivemateReleaseProperties.getProperty("keyPassword")
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            isMinifyEnabled = false
+            if (drivemateReleaseFile.isFile) signingConfig = signingConfigs.getByName("submissionRelease")
+        }
+    }
     namespace = "com.drivemate.app"
     compileSdk = 36
     useLibrary("android.car")
