@@ -45,4 +45,12 @@ class GardenTest {
         val m = listOf(Garden.Moment(1, 40, 30), Garden.Moment(2, 50, 10), Garden.Moment(3, 30, 25), Garden.Moment(4, 60, 20), Garden.Moment(5, 35, 10))
         assertEquals(listOf(2L, 4L, 5L), Garden.topMoments(m).map { it.offsetMs })
     }
+    @Test fun reboundCannotTurnADecelerationMomentIntoAnIncrease() {
+        val moment = Garden.Moment(4000, 18, 0)
+        assertEquals(moment, moment.withEndSpeed(22))
+    }
+    @Test fun continuedBrakingRetainsTheLowestSpeedAndOriginalStart() {
+        val moment = Garden.Moment(7000, 50, 30).withEndSpeed(10).withEndSpeed(20)
+        assertEquals(Garden.Moment(7000, 50, 10), moment)
+    }
 }

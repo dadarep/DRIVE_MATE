@@ -407,7 +407,7 @@ class DriveRecorder : Service() {
                     Log.i("DriveMate", "deceleration candidate count=$candidates")
                 } else if (braking && last != null && last - speed > 0.2f && moments.isNotEmpty()) {
                     // The moment ends where this braking maneuver ends, not at the first sample that crossed the threshold.
-                    moments[moments.lastIndex] = moments.last().copy(toKph = kph(speed))
+                    moments[moments.lastIndex] = moments.last().withEndSpeed(kph(speed))
                     storage.edit().putString("pendingMoments", com.drivemate.app.Garden.Moment.listToJson(moments)).apply()
                 }
                 previousSpeed = speed

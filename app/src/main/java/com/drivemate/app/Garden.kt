@@ -79,6 +79,8 @@ data class Garden(
     }
 
     data class Moment(val offsetMs: Long, val fromKph: Int, val toKph: Int) {
+        /** A rebound within the maneuver must not replace its lowest observed speed. */
+        fun withEndSpeed(speedKph: Int) = copy(toKph = minOf(toKph, speedKph))
         fun toJson(): JSONObject = JSONObject().put("t", offsetMs).put("from", fromKph).put("to", toKph)
         companion object {
             fun listFromJson(value: String?): List<Moment> {

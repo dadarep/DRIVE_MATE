@@ -503,8 +503,8 @@ class MainActivity : Activity() {
         if(sessions==0){sheet("드라이빙 정원 · 주행 회고","첫 주행을 마치면 회고와 다음 목표를 볼 수 있어요.");return}
         val g=garden();val trip=tripId(sessions)
         val justRewarded=g.goal==null&&g.reflections.lastOrNull()?.afterSessionId==trip
-        val title=when{g.due(sessions)->"지난 목표는 어땠나요?";justRewarded->"🍃 첫 잎이 돋았어요";g.goal!=null->"🌱 씨앗을 심었어요";else->"드라이빙 정원 · 주행 회고"}
-        val message=when{g.due(sessions)->"어떤 답이든 회고를 마치면 첫 잎이 돋아요.";justRewarded->"지난 목표를 돌아본 기록이 정원에 남았어요. 어려웠던 날도 솔직하게 돌아보면 잎이 자라요.";else->null}
+        val title=when{g.due(sessions)->"지난 목표는 어땠나요?";justRewarded->if(g.leaves==1)"🍃 첫 잎이 돋았어요" else "🍃 잎이 한 장 더 자랐어요";g.goal!=null->"🌱 씨앗을 심었어요";else->"드라이빙 정원 · 주행 회고"}
+        val message=when{g.due(sessions)->if(g.leaves==0)"어떤 답이든 회고를 마치면 첫 잎이 돋아요." else "어떤 답이든 회고를 마치면 잎이 한 장 더 자라요.";justRewarded->"지난 목표를 돌아본 기록이 정원에 남았어요. 어려웠던 날도 솔직하게 돌아보면 잎이 자라요.";else->null}
         sheet(title,message,scroll=true){
             stats(sessions,g)
             storage.getString("lastReminder",null)?.takeIf{it.isNotBlank()}?.let { note("다음 운전, 기억할 한 가지\n$it") }

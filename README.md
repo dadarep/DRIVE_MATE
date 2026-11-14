@@ -6,7 +6,7 @@
 
 - **서명된 release APK:** [`apk/TeamGreenlight_DRIVE_MATE_release.apk`](apk/TeamGreenlight_DRIVE_MATE_release.apk)
 - 패키지: `com.drivemate.app` / 버전: `0.1.0` (`versionCode 1`)
-- APK SHA-256: `369f7a48c5e994703d7d3c711859c701f6ec6d937b885a780f28234d8eb04cef`
+- APK SHA-256: `bd568b411ba0bc5b98a10d50252140842464295d95e726cd15384a33bdd4c3d8`
 - release 빌드이며 `debuggable=false`입니다. 서명 키와 비밀번호는 저장소에 포함하지 않습니다.
 - `release/DRIVE_MATE-0.1.0-debug.apk`는 개발 당시의 이전 debug 빌드입니다. **심사·설치에는 위 apk/의 release 파일을 사용해 주세요.**
 
